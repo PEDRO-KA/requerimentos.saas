@@ -1,0 +1,13 @@
+.backend-loading{opacity:.62;pointer-events:none}
+.backend-status{margin-top:12px;padding:10px 12px;border-radius:8px;background:#fff7ed;color:#9a3412;font-size:12px;line-height:1.5}
+.profile{position:relative;flex-wrap:wrap}
+.profile .logout-link{width:100%;padding:5px 0 0 48px;text-align:left;color:#cbd5e1;font-size:11px;background:none;border:0;cursor:pointer}
+.profile .logout-link:hover{color:#fff}
+.user-inactive{opacity:.58}
+.status-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;background:#16a34a}
+.status-dot.inactive{background:#94a3b8}
+.backend-empty{padding:32px!important;text-align:center;color:#64748b}
+.backend-error{padding:14px;border:1px solid #fecaca;border-radius:8px;background:#fef2f2;color:#991b1b}
+.file-list{display:grid;gap:8px;margin-top:10px}
+.file-list .doc{margin:0}
+@media(max-width:760px){.profile .logout-link{padding-left:0}}

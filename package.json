@@ -1,0 +1,21 @@
+{
+  "name": "requerimentos-ipe",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node scripts/check.mjs",
+    "setup:admin": "node scripts/bootstrap-admin.mjs",
+    "supabase": "supabase"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "supabase": "2.116.0"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.115.0"
+  }
+}

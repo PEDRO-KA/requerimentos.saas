@@ -1,0 +1,2 @@
+-- Dados estruturais são inseridos pelas migrations.
+-- Usuários e senhas nunca são semeados em arquivos versionados.
