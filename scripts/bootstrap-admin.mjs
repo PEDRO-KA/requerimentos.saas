@@ -95,4 +95,27 @@ const created = await supabase.auth.admin.createUser({
   },
 });
 if (created.error || !created.data.user) throw created.error || new Error("Não foi possível criar o administrador.");
+
+const { error: membershipError } = await supabase.from("memberships").upsert({
+  organization_id: "00000000-0000-0000-0000-000000000001",
+  user_id: created.data.user.id,
+  department_id: "10000000-0000-0000-0000-000000000001",
+  role: "admin",
+  created_by: created.data.user.id,
+}, { onConflict: "organization_id,user_id" });
+if (membershipError) {
+  await supabase.auth.admin.deleteUser(created.data.user.id);
+  throw membershipError;
+}
+
+const { data: membership, error: verificationError } = await supabase
+  .from("memberships")
+  .select("role")
+  .eq("organization_id", "00000000-0000-0000-0000-000000000001")
+  .eq("user_id", created.data.user.id)
+  .single();
+if (verificationError || membership?.role !== "admin") {
+  await supabase.auth.admin.deleteUser(created.data.user.id);
+  throw verificationError || new Error("A associação administrativa não pôde ser confirmada.");
+}
 console.log("Primeiro administrador criado e autorizado no banco.");

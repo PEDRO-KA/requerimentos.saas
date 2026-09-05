@@ -154,6 +154,26 @@ Deno.serve(async (request) => {
         }, 400);
       }
 
+      const { error: profileError } = await admin.from("profiles").upsert({
+        id: data.user.id,
+        full_name: fullName,
+        cpf_digits: cpf,
+        email,
+        is_active: true,
+      }, { onConflict: "id" });
+      const { error: membershipError } = await admin.from("memberships").upsert({
+        organization_id: organizationId,
+        user_id: data.user.id,
+        department_id: departmentId,
+        role,
+        created_by: caller.id,
+      }, { onConflict: "organization_id,user_id" });
+
+      if (profileError || membershipError) {
+        await admin.auth.admin.deleteUser(data.user.id);
+        throw profileError || membershipError;
+      }
+
       return json(request, {
         user: {
           id: data.user.id,
