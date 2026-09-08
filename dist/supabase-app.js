@@ -70,8 +70,8 @@
     const results = await Promise.all([
       db.client.from("organizations").select("id,name").eq("id", id).single(),
       db.client.from("departments").select("id,name,purpose,is_active").eq("organization_id", id).order("name"),
-      db.client.from("request_types").select("id,name,description,default_deadline_business_days,allow_attachments,is_active").eq("organization_id", id).order("name"),
-      db.client.from("workflow_steps").select("id,request_type_id,position,label,department_id,is_terminal").eq("organization_id", id).order("position"),
+      db.client.from("request_types").select("id,name,description,default_deadline_business_days,allow_attachments,is_active,current_workflow_version").eq("organization_id", id).order("name"),
+      db.client.from("workflow_steps").select("id,request_type_id,workflow_version,position,label,department_id,is_terminal").eq("organization_id", id).order("position"),
       db.client.from("profiles").select("id,full_name,is_active").order("full_name"),
       db.client.from("memberships").select("user_id,department_id,role").eq("organization_id", id),
       db.client.from("requests").select("id,protocol,request_type_id,requester_id,description,status,current_step_id,current_department_id,assigned_to,due_at,completed_at,created_at,updated_at").eq("organization_id", id).order("created_at", { ascending: false }),
@@ -88,7 +88,7 @@
     data.credentials = {};
     data.departments = db.departments.filter((x) => x.is_active).map((x) => [x.name, x.purpose]);
     data.types = db.types.filter((x) => x.is_active).map((x) => {
-      const flow = db.steps.filter((s) => s.request_type_id === x.id).sort((a, b) => a.position - b.position);
+      const flow = db.steps.filter((s) => s.request_type_id === x.id && s.workflow_version === x.current_workflow_version).sort((a, b) => a.position - b.position);
       return [x.name, `${flow.length} etapa(s)`, flow.map((s) => s.label).join(" → ") || "Fluxo não configurado"];
     });
     data.tickets = db.requests.map((x) => [x.protocol, requestType(x.request_type_id), department(x.current_department_id), person(x.assigned_to), person(x.requester_id), when(x.created_at), statuses[x.status] || x.status, badges[x.status] || "open"]);
@@ -365,7 +365,7 @@
 
   window.renderRequirements = function () {
     settingsHeader("Tipos de Requerimentos", "+ Novo tipo");
-    document.getElementById("settingsContent").innerHTML = `<article class="panel"><div class="panel-head"><h2>Tipos e fluxos</h2></div><table class="table"><thead><tr><th>Requerimento</th><th>Prazo</th><th>Fluxo</th><th>Status</th><th></th></tr></thead><tbody>${db.types.map((t) => { const flow = db.steps.filter((s) => s.request_type_id === t.id).sort((a, b) => a.position - b.position); return `<tr class="${t.is_active ? "" : "user-inactive"}"><td><strong>${esc(t.name)}</strong><span class="sub">${esc(t.description)}</span></td><td>${t.default_deadline_business_days} dias úteis</td><td>${esc(flow.map((s) => s.label).join(" → ") || "Não configurado")}</td><td>${t.is_active ? "Ativo" : "Inativo"}</td><td><button class="link" onclick="flowEditor('${t.id}')">Adicionar etapa</button> &nbsp; <button class="link" onclick="editRequirementType('${t.id}')">Editar</button></td></tr>`; }).join("")}</tbody></table></article>`;
+    document.getElementById("settingsContent").innerHTML = `<article class="panel"><div class="panel-head"><h2>Tipos e fluxos</h2></div><table class="table"><thead><tr><th>Requerimento</th><th>Prazo</th><th>Fluxo</th><th>Status</th><th></th></tr></thead><tbody>${db.types.map((t) => { const flow = db.steps.filter((s) => s.request_type_id === t.id && s.workflow_version === t.current_workflow_version).sort((a, b) => a.position - b.position); return `<tr class="${t.is_active ? "" : "user-inactive"}"><td><strong>${esc(t.name)}</strong><span class="sub">${esc(t.description)}</span></td><td>${t.default_deadline_business_days} dias úteis</td><td>${esc(flow.map((s) => s.label).join(" → ") || "Não configurado")}</td><td>${t.is_active ? "Ativo" : "Inativo"}</td><td><button class="link" onclick="flowEditor('${t.id}')">Editar etapa</button> &nbsp; <button class="link" onclick="editRequirementType('${t.id}')">Editar</button></td></tr>`; }).join("")}</tbody></table></article>`;
   };
   window.saveNewType = async function () {
     const name = document.getElementById("requirementName").value.trim();
@@ -393,24 +393,57 @@
       closeModal(); activeSettings = "types"; await refresh("settings"); notify("Tipo atualizado.");
     });
   };
+  let workflowDraft = null;
+  function workflowDepartmentOptions(selected) {
+    return db.departments.filter((x) => x.is_active).map((x) => `<option value="${x.id}" ${selected === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("");
+  }
+  function renderWorkflowEditor() {
+    const t = db.types.find((x) => x.id === workflowDraft?.requestTypeId);
+    if (!t || !workflowDraft) return;
+    const rows = workflowDraft.departmentIds.map((departmentId, index) => `<div class="workflow-step-row"><span class="workflow-order">${index + 1}</span><div class="field"><label for="workflowDepartment${index}">Departamento responsável</label><select id="workflowDepartment${index}" onchange="updateWorkflowDepartment(${index},this.value)">${workflowDepartmentOptions(departmentId)}</select></div><div class="workflow-step-actions"><button type="button" class="btn" onclick="moveWorkflowStep(${index},-1)" ${index === 0 ? "disabled" : ""} aria-label="Mover etapa ${index + 1} para cima" title="Mover para cima">↑</button><button type="button" class="btn" onclick="moveWorkflowStep(${index},1)" ${index === workflowDraft.departmentIds.length - 1 ? "disabled" : ""} aria-label="Mover etapa ${index + 1} para baixo" title="Mover para baixo">↓</button><button type="button" class="link workflow-remove" onclick="removeWorkflowStep(${index})" ${workflowDraft.departmentIds.length === 1 ? "disabled" : ""}>Remover</button></div></div>`).join("");
+    const addDisabled = db.departments.every((x) => !x.is_active) || workflowDraft.departmentIds.length >= 20;
+    dialog(`Editar etapas: ${esc(t.name)}`, `<p class="workflow-help">A nova ordem será usada somente em novos requerimentos. Processos existentes manterão o fluxo original.</p><div class="workflow-editor">${rows}<div class="workflow-step-row workflow-terminal"><span class="workflow-order">${workflowDraft.departmentIds.length + 1}</span><div><strong>Conclusão</strong><span class="sub">Etapa final fixa</span></div></div></div><button type="button" class="btn" onclick="addWorkflowStep()" ${addDisabled ? "disabled" : ""}>+ Adicionar etapa</button><div id="flowError" class="text-destructive text-small"></div>`, "Salvar etapas", saveWorkflowSteps);
+  }
   window.flowEditor = function (id) {
     const t = db.types.find((x) => x.id === id);
-    const flow = db.steps.filter((x) => x.request_type_id === id).sort((a, b) => a.position - b.position);
-    dialog(`Fluxo: ${esc(t?.name)}`, `<div class="flow">${flow.map((s) => `<div class="flow-node">${esc(s.label)}${s.is_terminal ? " (final)" : ""}</div>`).join('<div class="arrow">→</div>')}</div><div class="field" style="margin-top:20px"><label>Adicionar departamento antes da conclusão</label><select id="flowDepartment">${departmentOptions("")}</select></div><div id="flowError" class="text-destructive text-small"></div>`, "Adicionar etapa", async () => {
-      const departmentId = document.getElementById("flowDepartment").value;
-      const d = db.departments.find((x) => x.id === departmentId);
-      if (!d) return document.getElementById("flowError").textContent = "Selecione um departamento.";
-      const terminal = flow.find((x) => x.is_terminal);
-      const position = terminal?.position || flow.length + 1;
-      if (terminal) {
-        const moved = await db.client.from("workflow_steps").update({ position: position + 1 }).eq("id", terminal.id);
-        if (moved.error) return document.getElementById("flowError").textContent = errorText(moved.error, "Não foi possível atualizar o fluxo.");
-      }
-      const added = await db.client.from("workflow_steps").insert({ organization_id: orgId(), request_type_id: id, position, label: d.name, department_id: d.id, is_terminal: false });
-      if (added.error) return document.getElementById("flowError").textContent = errorText(added.error, "Não foi possível adicionar a etapa.");
-      closeModal(); activeSettings = "types"; await refresh("settings"); notify("Etapa adicionada.");
-    });
+    if (!t) return;
+    const flow = db.steps.filter((x) => x.request_type_id === id && x.workflow_version === t.current_workflow_version && !x.is_terminal).sort((a, b) => a.position - b.position);
+    workflowDraft = { requestTypeId: id, version: t.current_workflow_version, departmentIds: flow.map((x) => x.department_id) };
+    renderWorkflowEditor();
   };
+  window.updateWorkflowDepartment = function (index, departmentId) {
+    if (workflowDraft?.departmentIds[index] !== undefined) workflowDraft.departmentIds[index] = departmentId;
+  };
+  window.moveWorkflowStep = function (index, direction) {
+    const target = index + direction;
+    if (!workflowDraft || target < 0 || target >= workflowDraft.departmentIds.length) return;
+    [workflowDraft.departmentIds[index], workflowDraft.departmentIds[target]] = [workflowDraft.departmentIds[target], workflowDraft.departmentIds[index]];
+    renderWorkflowEditor();
+  };
+  window.addWorkflowStep = function () {
+    const firstDepartment = db.departments.find((x) => x.is_active);
+    if (!workflowDraft || !firstDepartment || workflowDraft.departmentIds.length >= 20) return;
+    workflowDraft.departmentIds.push(firstDepartment.id);
+    renderWorkflowEditor();
+  };
+  window.removeWorkflowStep = function (index) {
+    if (!workflowDraft || workflowDraft.departmentIds.length <= 1) return;
+    workflowDraft.departmentIds.splice(index, 1);
+    renderWorkflowEditor();
+  };
+  async function saveWorkflowSteps() {
+    const node = document.getElementById("flowError");
+    if (!workflowDraft || workflowDraft.departmentIds.length < 1) return node.textContent = "Mantenha pelo menos uma etapa departamental.";
+    const invalid = workflowDraft.departmentIds.some((id) => !db.departments.some((d) => d.id === id && d.is_active));
+    if (invalid) return node.textContent = "Selecione somente departamentos ativos.";
+    const result = await db.client.rpc("save_workflow_steps", {
+      target_request_type_id: workflowDraft.requestTypeId,
+      expected_workflow_version: workflowDraft.version,
+      ordered_department_ids: workflowDraft.departmentIds,
+    });
+    if (result.error) return node.textContent = errorText(result.error, "Não foi possível salvar o fluxo.");
+    closeModal(); activeSettings = "types"; workflowDraft = null; await refresh("settings"); notify("Etapas atualizadas para novos requerimentos.");
+  }
 
   async function initialize() {
     data.credentials = {};

@@ -10,4 +10,14 @@
 .backend-error{padding:14px;border:1px solid #fecaca;border-radius:8px;background:#fef2f2;color:#991b1b}
 .file-list{display:grid;gap:8px;margin-top:10px}
 .file-list .doc{margin:0}
-@media(max-width:760px){.profile .logout-link{padding-left:0}}
+.workflow-help{margin:0 0 16px;color:#64748b}
+.workflow-editor{display:grid;gap:10px;margin-bottom:14px}
+.workflow-step-row{display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px;border:1px solid #dce5eb;border-radius:8px;background:#f8fafc}
+.workflow-step-row .field{margin:0}
+.workflow-order{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:#eaf2f8;color:#123b63;font-weight:750}
+.workflow-step-actions{display:flex;align-items:center;gap:6px}
+.workflow-step-actions .btn{padding:6px 9px}
+.workflow-step-actions button:disabled,.workflow-editor+button:disabled{opacity:.45;cursor:not-allowed}
+.workflow-remove{color:#be123c}
+.workflow-terminal{grid-template-columns:30px 1fr;background:#eaf7ef;border-color:#b7dfc7}
+@media(max-width:760px){.profile .logout-link{padding-left:0}.workflow-step-row{grid-template-columns:30px 1fr}.workflow-step-actions{grid-column:2}}

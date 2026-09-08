@@ -3,10 +3,12 @@ import path from "node:path";
 
 const root = process.cwd();
 const read = (file) => readFile(path.join(root, file), "utf8");
-const [pkg, source, app, config, core, access, workflow, login, admin, output] = await Promise.all([
+const [pkg, source, app, config, core, access, workflow, workflowVersioning, login, admin, output] = await Promise.all([
   read("package.json"), read("gestao-academica.html"), read("src/supabase-app.js"), read("supabase/config.toml"),
   read("supabase/migrations/202609040001_core_schema.sql"), read("supabase/migrations/202609040002_access_control.sql"),
-  read("supabase/migrations/202609040003_workflow_functions.sql"), read("supabase/functions/login-by-identifier/index.ts"),
+  read("supabase/migrations/202609040003_workflow_functions.sql"),
+  read("supabase/migrations/202609070001_versioned_workflow_editing.sql"),
+  read("supabase/functions/login-by-identifier/index.ts"),
   read("supabase/functions/admin-users/index.ts"), read("dist/index.html"),
 ]);
 const failures = [];
@@ -25,6 +27,8 @@ expect(/\[auth\.email\][\s\S]*?enable_signup = true/.test(config), "O provedor d
 expect((access.match(/enable row level security/g) || []).length === 12, "Todas as 12 tabelas públicas devem usar RLS.");
 expect(access.includes("shares_org_with_user"), "A política de perfis deve evitar recursão RLS.");
 expect(workflow.includes("generate_protocol") && workflow.includes("advance_request"), "Funções transacionais ausentes.");
+expect(workflowVersioning.includes("current_workflow_version") && workflowVersioning.includes("save_workflow_steps"), "Versionamento seguro de fluxos ausente.");
+expect(app.includes(">Editar etapa</button>") && app.includes('rpc("save_workflow_steps"'), "Editor de etapas não está conectado ao fluxo versionado.");
 expect(login.includes('action === "recover"') && admin.includes("createUser"), "Funções de autenticação incompletas.");
 for (const bad of ["''admin''", "''open''", "''request-documents''"]) expect(!(core + access + workflow).includes(bad), `Aspas SQL inválidas: ${bad}`);
 
