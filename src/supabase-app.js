@@ -1,9 +1,18 @@
 (function () {
   const cfg = window.__SUPABASE_CONFIG__ || {};
   const roles = { admin: "Administradora", coordinator: "Coordenador", attendant: "Atendente", student: "Aluno" };
-  const statuses = { open: "Aberto", in_review: "Em análise", awaiting_requester: "Aguardando solicitante", forwarded: "Encaminhado", completed: "Concluído", rejected: "Indeferido", canceled: "Cancelado" };
+  const statuses = { open: "Aberto", in_review: "Em análise", awaiting_requester: "Aguardando aluno", forwarded: "Encaminhado", completed: "Concluído", rejected: "Indeferido", canceled: "Cancelado" };
   const badges = { open: "open", in_review: "progress", awaiting_requester: "open", forwarded: "open", completed: "done", rejected: "danger", canceled: "danger" };
-  const db = { client: null, user: null, profile: null, member: null, org: null, departments: [], types: [], steps: [], profiles: [], memberships: [], requests: [], adminUsers: [], recovery: false };
+  const sexLabels = { female: "Feminino", male: "Masculino", other: "Outro", prefer_not_to_say: "Prefiro não informar" };
+  const studentUtils = globalThis.StudentUtils;
+  const db = { client: null, user: null, profile: null, member: null, org: null, departments: [], types: [], steps: [], profiles: [], memberships: [], requests: [], courses: [], classes: [], students: [], enrollments: [], adminUsers: [], recovery: false };
+  let studentRegistryQuery = "";
+  let requestDraft = null;
+  let studentFormContext = null;
+  let studentSearchResults = [];
+  let studentSearchActive = -1;
+  let studentSearchSequence = 0;
+  let studentSearchTimer = null;
 
   const esc = (v) => String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   const when = (v) => v ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(v)) : "—";
@@ -14,9 +23,16 @@
   const person = (id) => db.profiles.find((x) => x.id === id)?.full_name || "Não atribuído";
   const department = (id) => db.departments.find((x) => x.id === id)?.name || "Concluído";
   const requestType = (id) => db.types.find((x) => x.id === id)?.name || "Requerimento";
+  const student = (id) => db.students.find((x) => x.id === id);
+  const course = (id) => db.courses.find((x) => x.id === id)?.name || "Não informado";
+  const courseClass = (id) => db.classes.find((x) => x.id === id)?.name || "Não informada";
+  const requestStudent = (item) => item?.student?.full_name || student(item?.student_id)?.full_name || person(item?.requester_id);
   const errorText = (e, fallback) => {
     const message = String(e?.message || e || "");
     if (/duplicate|unique/i.test(message)) return "Já existe um cadastro com esses dados.";
+    if (/Invalid CPF/i.test(message)) return "Informe um CPF válido.";
+    if (/Invalid mobile phone/i.test(message)) return "Informe um celular válido com DDD.";
+    if (/request history/i.test(message)) return "Este aluno possui requerimentos e não pode ser excluído.";
     if (/row-level security|permission|forbidden|not authorized/i.test(message)) return "Você não tem permissão para realizar esta ação.";
     return message || fallback;
   };
@@ -74,11 +90,15 @@
       db.client.from("workflow_steps").select("id,request_type_id,workflow_version,position,label,department_id,is_terminal").eq("organization_id", id).order("position"),
       db.client.from("profiles").select("id,full_name,is_active").order("full_name"),
       db.client.from("memberships").select("user_id,department_id,role").eq("organization_id", id),
-      db.client.from("requests").select("id,protocol,request_type_id,requester_id,description,status,current_step_id,current_department_id,assigned_to,due_at,completed_at,created_at,updated_at").eq("organization_id", id).order("created_at", { ascending: false }),
+      db.client.from("requests").select("id,protocol,request_type_id,requester_id,student_id,student_enrollment_id,description,status,current_step_id,current_department_id,assigned_to,due_at,completed_at,created_at,updated_at,student:students!requests_student_fk(id,full_name,cpf_digits)").eq("organization_id", id).order("created_at", { ascending: false }),
+      db.client.from("courses").select("id,name,is_active,created_at,updated_at").eq("organization_id", id).order("name"),
+      db.client.from("course_classes").select("id,course_id,name,is_active,created_at,updated_at").eq("organization_id", id).order("name"),
+      isStaff() ? db.client.from("students").select("id,full_name,cpf_digits,email,mobile_digits,birth_date,sex,is_active,created_by,created_at,updated_at").eq("organization_id", id).order("full_name").limit(1000) : Promise.resolve({ data: [], error: null }),
+      isStaff() ? db.client.from("student_enrollments").select("id,student_id,course_id,class_id,started_at,ended_at").eq("organization_id", id).is("ended_at", null).limit(1000) : Promise.resolve({ data: [], error: null }),
     ]);
     const failed = results.find((x) => x.error);
     if (failed) throw failed.error;
-    [db.org, db.departments, db.types, db.steps, db.profiles, db.memberships, db.requests] = results.map((x) => x.data || []);
+    [db.org, db.departments, db.types, db.steps, db.profiles, db.memberships, db.requests, db.courses, db.classes, db.students, db.enrollments] = results.map((x) => x.data || []);
     db.adminUsers = isAdmin() ? (await invoke("admin-users", { action: "list" })).users || [] : [];
     syncLegacy();
     applyIdentity();
@@ -91,7 +111,7 @@
       const flow = db.steps.filter((s) => s.request_type_id === x.id && s.workflow_version === x.current_workflow_version).sort((a, b) => a.position - b.position);
       return [x.name, `${flow.length} etapa(s)`, flow.map((s) => s.label).join(" → ") || "Fluxo não configurado"];
     });
-    data.tickets = db.requests.map((x) => [x.protocol, requestType(x.request_type_id), department(x.current_department_id), person(x.assigned_to), person(x.requester_id), when(x.created_at), statuses[x.status] || x.status, badges[x.status] || "open"]);
+    data.tickets = db.requests.map((x) => [x.protocol, requestType(x.request_type_id), department(x.current_department_id), person(x.assigned_to), requestStudent(x), when(x.created_at), statuses[x.status] || x.status, badges[x.status] || "open"]);
   }
 
   function applyIdentity() {
@@ -103,6 +123,7 @@
       if (!box.querySelector(".logout-link")) box.insertAdjacentHTML("beforeend", '<button class="logout-link" type="button" onclick="logout()">Sair da conta</button>');
     }
     document.querySelectorAll(".sidebar [data-section]").forEach((x) => { x.style.display = isAdmin() ? "" : "none"; });
+    document.querySelectorAll(".sidebar [data-staff-only]").forEach((x) => { x.style.display = isStaff() ? "" : "none"; });
     const label = [...document.querySelectorAll(".side-label")].find((x) => x.textContent.trim() === "Configurações");
     if (label) label.style.display = isAdmin() ? "" : "none";
     const dashboard = document.querySelector('[data-view="dashboard"]');
@@ -166,10 +187,12 @@
   window.showView = function (name) {
     if (!db.user) return showLogin();
     if (name === "settings" && !isAdmin()) return notify("Esta área é exclusiva do administrador.");
+    if (name === "students" && !isStaff()) return notify("Esta área é exclusiva da equipe.");
     if (name === "dashboard" && !isStaff()) name = "portal";
     activate(name);
     if (name === "dashboard") renderDashboard();
     if (name === "requests") renderRequests();
+    if (name === "students") renderStudents();
     if (name === "portal") renderPortal();
     if (name === "settings") renderSettings();
   };
@@ -181,7 +204,7 @@
     const waiting = db.requests.filter((x) => x.status === "awaiting_requester");
     const completed = db.requests.filter((x) => x.status === "completed");
     const overdue = active.filter((x) => x.due_at && new Date(x.due_at) < new Date()).length;
-    document.getElementById("dashboard").innerHTML = `<div class="top"><div><div class="crumb">Visão geral / Painel</div><h1>Olá, ${esc(db.profile.full_name.split(" ")[0])}</h1></div><div class="actions"><button class="btn" onclick="showView('portal')">Meu portal</button><button class="btn primary" onclick="openModal()">+ Novo requerimento</button></div></div><div class="metrics"><div class="metric"><div class="label">Em andamento</div><div class="value">${active.length}</div><div class="trend">Dados em tempo real</div></div><div class="metric"><div class="label">Aguardando solicitante</div><div class="value">${waiting.length}</div><div class="trend">${overdue} fora do prazo</div></div><div class="metric"><div class="label">Concluídos</div><div class="value">${completed.length}</div><div class="trend">No histórico acessível</div></div><div class="metric"><div class="label">Total visível</div><div class="value">${db.requests.length}</div><div class="trend">Conforme seu perfil</div></div></div><article class="panel"><div class="panel-head"><h2>Requerimentos recentes</h2><button class="link" onclick="showView('requests')">Ver todos</button></div><table class="table"><thead><tr><th>Protocolo</th><th>Solicitante</th><th>Tipo</th><th>Status</th></tr></thead><tbody>${db.requests.slice(0, 6).map((x) => `<tr><td><strong>${esc(x.protocol)}</strong><span class="sub">${esc(when(x.created_at))}</span></td><td>${esc(person(x.requester_id))}</td><td>${esc(requestType(x.request_type_id))}</td><td><span class="badge ${badges[x.status] || "open"}">${esc(statuses[x.status] || x.status)}</span></td></tr>`).join("") || '<tr><td colspan="4" class="backend-empty">Nenhum requerimento cadastrado.</td></tr>'}</tbody></table></article>`;
+    document.getElementById("dashboard").innerHTML = `<div class="top"><div><div class="crumb">Visão geral / Painel</div><h1>Olá, ${esc(db.profile.full_name.split(" ")[0])}</h1></div><div class="actions"><button class="btn" onclick="showView('portal')">Meu portal</button><button class="btn primary" onclick="openModal()">+ Novo requerimento</button></div></div><div class="metrics"><div class="metric"><div class="label">Em andamento</div><div class="value">${active.length}</div><div class="trend">Dados em tempo real</div></div><div class="metric"><div class="label">Aguardando aluno</div><div class="value">${waiting.length}</div><div class="trend">${overdue} fora do prazo</div></div><div class="metric"><div class="label">Concluídos</div><div class="value">${completed.length}</div><div class="trend">No histórico acessível</div></div><div class="metric"><div class="label">Total visível</div><div class="value">${db.requests.length}</div><div class="trend">Conforme seu perfil</div></div></div><article class="panel"><div class="panel-head"><h2>Requerimentos recentes</h2><button class="link" onclick="showView('requests')">Ver todos</button></div><table class="table"><thead><tr><th>Protocolo</th><th>Aluno</th><th>Tipo</th><th>Status</th></tr></thead><tbody>${db.requests.slice(0, 6).map((x) => `<tr><td><strong>${esc(x.protocol)}</strong><span class="sub">${esc(when(x.created_at))}</span></td><td>${esc(requestStudent(x))}</td><td>${esc(requestType(x.request_type_id))}</td><td><span class="badge ${badges[x.status] || "open"}">${esc(statuses[x.status] || x.status)}</span></td></tr>`).join("") || '<tr><td colspan="4" class="backend-empty">Nenhum requerimento cadastrado.</td></tr>'}</tbody></table></article>`;
   }
 
   window.setRequestFilter = function (key, value) { requestFilters[key] = value; renderRequests(); };
@@ -189,12 +212,12 @@
     const f = requestFilters;
     const now = Date.now();
     const rows = db.requests.filter((x) => {
-      const haystack = [x.protocol, requestType(x.request_type_id), person(x.requester_id), department(x.current_department_id), person(x.assigned_to)].join(" ").toLowerCase();
+      const haystack = [x.protocol, requestType(x.request_type_id), requestStudent(x), department(x.current_department_id), person(x.assigned_to)].join(" ").toLowerCase();
       const age = now - new Date(x.created_at).getTime();
       const period = f.period === "today" ? age < 86400000 : f.period === "30" ? age < 2592000000 : age < 604800000;
       return period && haystack.includes(f.query.toLowerCase()) && (!f.type || x.request_type_id === f.type) && (!f.department || x.current_department_id === f.department) && (!f.responsible || x.assigned_to === f.responsible) && (!f.status || x.status === f.status);
     });
-    document.getElementById("requests").innerHTML = `<div class="top"><div><div class="crumb">Operação / Requerimentos</div><h1>Requerimentos</h1></div><div class="actions"><button class="btn" onclick="refreshRequests()">↻ Atualizar</button><button class="btn primary" onclick="openModal()">+ Novo requerimento</button></div></div><div class="toolbar"><input class="search" placeholder="Pesquisar por protocolo, aluno ou requerimento" value="${esc(f.query)}" oninput="setRequestFilter('query',this.value)"><div class="actions"><button class="btn ${f.period === "today" ? "primary" : ""}" onclick="setRequestFilter('period','today')">Hoje</button><button class="btn ${f.period === "7" ? "primary" : ""}" onclick="setRequestFilter('period','7')">7 dias</button><button class="btn ${f.period === "30" ? "primary" : ""}" onclick="setRequestFilter('period','30')">30 dias</button></div></div><article class="panel"><div class="panel-head"><h2>${rows.length} requerimento(s)</h2><button class="link" onclick="requestFilters={period:'7',type:'',department:'',responsible:'',status:'',query:''};renderRequests()">Limpar filtros</button></div><table class="table"><thead><tr><th>Protocolo</th><th>Tipo</th><th>Aluno</th><th>Departamento</th><th>Responsável</th><th>Status</th><th>Abertura</th><th></th></tr></thead><tbody>${rows.map((x) => `<tr><td><strong>${esc(x.protocol)}</strong></td><td>${esc(requestType(x.request_type_id))}</td><td>${esc(person(x.requester_id))}</td><td>${esc(department(x.current_department_id))}</td><td>${esc(person(x.assigned_to))}</td><td><span class="badge ${badges[x.status] || "open"}">${esc(statuses[x.status] || x.status)}</span></td><td>${esc(when(x.created_at))}</td><td><button class="link" onclick="viewTicket('${x.id}')">Visualizar</button></td></tr>`).join("") || '<tr><td colspan="8" class="backend-empty">Nenhum requerimento encontrado.</td></tr>'}</tbody></table></article>`;
+    document.getElementById("requests").innerHTML = `<div class="top"><div><div class="crumb">Operação / Requerimentos</div><h1>Requerimentos</h1></div><div class="actions"><button class="btn" onclick="refreshRequests()">↻ Atualizar</button><button class="btn primary" onclick="openModal()">+ Novo requerimento</button></div></div><div class="toolbar"><input class="search" placeholder="Pesquisar por protocolo, aluno ou requerimento" value="${esc(f.query)}" oninput="setRequestFilter('query',this.value)"><div class="actions"><button class="btn ${f.period === "today" ? "primary" : ""}" onclick="setRequestFilter('period','today')">Hoje</button><button class="btn ${f.period === "7" ? "primary" : ""}" onclick="setRequestFilter('period','7')">7 dias</button><button class="btn ${f.period === "30" ? "primary" : ""}" onclick="setRequestFilter('period','30')">30 dias</button></div></div><article class="panel"><div class="panel-head"><h2>${rows.length} requerimento(s)</h2><button class="link" onclick="requestFilters={period:'7',type:'',department:'',responsible:'',status:'',query:''};renderRequests()">Limpar filtros</button></div><table class="table"><thead><tr><th>Protocolo</th><th>Tipo</th><th>Aluno</th><th>Departamento</th><th>Responsável interno</th><th>Status</th><th>Abertura</th><th></th></tr></thead><tbody>${rows.map((x) => `<tr><td><strong>${esc(x.protocol)}</strong></td><td>${esc(requestType(x.request_type_id))}</td><td>${esc(requestStudent(x))}</td><td>${esc(department(x.current_department_id))}</td><td>${esc(person(x.assigned_to))}</td><td><span class="badge ${badges[x.status] || "open"}">${esc(statuses[x.status] || x.status)}</span></td><td>${esc(when(x.created_at))}</td><td><button class="link" onclick="viewTicket('${x.id}')">Visualizar</button></td></tr>`).join("") || '<tr><td colspan="8" class="backend-empty">Nenhum requerimento encontrado.</td></tr>'}</tbody></table></article>`;
   };
 
   function renderPortal() {
@@ -205,33 +228,266 @@
     document.getElementById("portal").innerHTML = `<div class="top"><div><div class="crumb">Portal do usuário</div><h1>Meus requerimentos</h1></div><button class="btn primary" onclick="openModal()">+ Abrir requerimento</button></div><div class="metrics"><div class="metric"><div class="label">Em andamento</div><div class="value">${active.length}</div></div><div class="metric"><div class="label">Aguardando você</div><div class="value">${waiting.length}</div></div><div class="metric"><div class="label">Concluídos</div><div class="value">${completed.length}</div></div></div><article class="panel"><div class="panel-head"><h2>Andamento</h2></div><table class="table"><thead><tr><th>Protocolo</th><th>Assunto</th><th>Etapa atual</th><th>Status</th><th></th></tr></thead><tbody>${own.map((x) => `<tr><td>${esc(x.protocol)}</td><td>${esc(requestType(x.request_type_id))}</td><td>${esc(department(x.current_department_id))}</td><td><span class="badge ${badges[x.status] || "open"}">${esc(statuses[x.status] || x.status)}</span></td><td><button class="link" onclick="viewTicket('${x.id}')">Acompanhar</button></td></tr>`).join("") || '<tr><td colspan="5" class="backend-empty">Você ainda não possui requerimentos.</td></tr>'}</tbody></table></article>`;
   }
 
+  function currentStudentEnrollment(studentId) {
+    return db.enrollments.find((item) => item.student_id === studentId && !item.ended_at);
+  }
+  function courseOptions(selected = "") {
+    return `<option value="">Selecione o curso</option>${db.courses.filter((item) => item.is_active || item.id === selected).map((item) => `<option value="${item.id}" ${item.id === selected ? "selected" : ""}>${esc(item.name)}${item.is_active ? "" : " (inativo)"}</option>`).join("")}`;
+  }
+  function classOptions(courseId, selected = "") {
+    const options = db.classes.filter((item) => item.course_id === courseId && (item.is_active || item.id === selected));
+    return `<option value="">${courseId ? "Selecione a turma" : "Selecione primeiro o curso"}</option>${options.map((item) => `<option value="${item.id}" ${item.id === selected ? "selected" : ""}>${esc(item.name)}${item.is_active ? "" : " (inativa)"}</option>`).join("")}`;
+  }
+  function studentRows(records) {
+    return records.map((item) => {
+      const link = currentStudentEnrollment(item.id);
+      return `<tr class="${item.is_active ? "" : "user-inactive"}"><td><strong>${esc(item.full_name)}</strong><span class="sub">${esc(sexLabels[item.sex] || item.sex)}</span></td><td>${esc(studentUtils.formatCpf(item.cpf_digits))}</td><td><div class="student-contact">${esc(item.email)}<span class="sub">${esc(studentUtils.formatMobile(item.mobile_digits))}</span></div></td><td>${esc(course(link?.course_id))}</td><td>${esc(courseClass(link?.class_id))}</td><td><span class="student-status"><span class="status-dot ${item.is_active ? "" : "inactive"}"></span>${item.is_active ? "Ativo" : "Inativo"}</span></td><td><button class="link" onclick="openStudentForm('${item.id}')">Editar</button>${isAdmin() ? ` &nbsp; <button class="link workflow-remove" onclick="confirmDeleteStudent('${item.id}')">Excluir</button>` : ""}</td></tr>`;
+    }).join("") || '<tr><td colspan="7" class="backend-empty">Nenhum aluno encontrado.</td></tr>';
+  }
+  window.renderStudents = function () {
+    const query = studentUtils.normalizeSearch(studentRegistryQuery);
+    const digits = studentUtils.cpfDigits(studentRegistryQuery);
+    const records = db.students.filter((item) => !query || studentUtils.normalizeSearch(item.full_name).includes(query) || (digits && item.cpf_digits.includes(digits)));
+    document.getElementById("students").innerHTML = `<div class="top"><div><div class="crumb">Cadastros / Alunos</div><h1>Alunos</h1></div><button class="btn primary" onclick="openStudentForm()">+ Cadastrar aluno</button></div><div class="toolbar"><input class="search" aria-label="Pesquisar alunos" placeholder="Pesquisar por nome ou CPF" value="${esc(studentRegistryQuery)}" oninput="setStudentRegistryQuery(this.value)"><span class="sub">${records.length} aluno(s)</span></div><article class="panel"><table class="table"><thead><tr><th>Nome</th><th>CPF</th><th>Contato</th><th>Curso</th><th>Turma</th><th>Status</th><th></th></tr></thead><tbody id="studentRows">${studentRows(records)}</tbody></table></article>`;
+  };
+  window.setStudentRegistryQuery = function (value) {
+    studentRegistryQuery = value;
+    const query = studentUtils.normalizeSearch(value);
+    const digits = studentUtils.cpfDigits(value);
+    const records = db.students.filter((item) => !query || studentUtils.normalizeSearch(item.full_name).includes(query) || (digits && item.cpf_digits.includes(digits)));
+    const body = document.getElementById("studentRows");
+    if (body) body.innerHTML = studentRows(records);
+  };
+  function studentForm(item) {
+    const link = item ? currentStudentEnrollment(item.id) : null;
+    const selectedCourse = link?.course_id || "";
+    const selectedClass = link?.class_id || "";
+    return `<p class="student-form-help">O CPF será o identificador do aluno; nenhuma matrícula ou conta de acesso será criada.</p><div class="field"><label for="studentName">Nome completo</label><input id="studentName" maxlength="160" autocomplete="name" value="${esc(item?.full_name || "")}"></div><div class="form-grid"><div class="field"><label for="studentCpf">CPF</label><input id="studentCpf" inputmode="numeric" autocomplete="off" placeholder="000.000.000-00" value="${esc(studentUtils.formatCpf(item?.cpf_digits || ""))}" oninput="formatStudentCpfInput(this)"></div><div class="field"><label for="studentEmail">E-mail</label><input id="studentEmail" type="email" autocomplete="email" maxlength="254" value="${esc(item?.email || "")}"></div></div><div class="form-grid"><div class="field"><label for="studentMobile">Celular</label><input id="studentMobile" inputmode="tel" autocomplete="tel" placeholder="(00) 00000-0000" value="${esc(studentUtils.formatMobile(item?.mobile_digits || ""))}" oninput="formatStudentMobileInput(this)"></div><div class="field"><label for="studentBirthDate">Data de nascimento</label><input id="studentBirthDate" type="date" max="${new Date().toISOString().slice(0, 10)}" value="${esc(item?.birth_date || "")}"></div></div><div class="field"><label for="studentSex">Sexo</label><select id="studentSex"><option value="">Selecione</option>${Object.entries(sexLabels).map(([value, label]) => `<option value="${value}" ${item?.sex === value ? "selected" : ""}>${label}</option>`).join("")}</select></div><div class="form-grid"><div class="field"><label for="studentCourse">Curso</label><select id="studentCourse" onchange="refreshStudentClassOptions(this.value)">${courseOptions(selectedCourse)}</select></div><div class="field"><label for="studentClass">Turma</label><select id="studentClass" ${selectedCourse ? "" : "disabled"}>${classOptions(selectedCourse, selectedClass)}</select></div></div><div id="studentFormError" class="text-destructive text-small" role="alert"></div>`;
+  }
+  window.formatStudentCpfInput = function (input) { input.value = studentUtils.formatCpf(input.value); };
+  window.formatStudentMobileInput = function (input) { input.value = studentUtils.formatMobile(input.value); };
+  window.refreshStudentClassOptions = function (courseId) {
+    const select = document.getElementById("studentClass");
+    if (!select) return;
+    select.innerHTML = classOptions(courseId);
+    select.disabled = !courseId;
+  };
+  window.openStudentForm = function (studentId = "", returnToRequest = false) {
+    const item = studentId ? student(studentId) : null;
+    studentFormContext = { studentId: item?.id || null, returnToRequest };
+    const form = studentForm(item).replace(
+      "nenhuma matrícula ou conta de acesso será criada",
+      "nenhum número de matrícula ou conta de acesso será criado",
+    );
+    dialog(item ? "Editar aluno" : "Cadastrar aluno", form, item ? "Salvar aluno" : "Cadastrar aluno", saveStudent);
+    if (returnToRequest) {
+      const cancel = document.querySelector("#modal .modal-actions .btn");
+      if (cancel) { cancel.textContent = "Voltar"; cancel.onclick = renderRequestDialog; }
+    }
+  };
+  function readStudentForm() {
+    const values = {
+      fullName: document.getElementById("studentName")?.value.trim(),
+      cpf: document.getElementById("studentCpf")?.value,
+      email: document.getElementById("studentEmail")?.value.trim().toLowerCase(),
+      mobile: document.getElementById("studentMobile")?.value,
+      birthDate: document.getElementById("studentBirthDate")?.value,
+      sex: document.getElementById("studentSex")?.value,
+      courseId: document.getElementById("studentCourse")?.value,
+      classId: document.getElementById("studentClass")?.value,
+    };
+    if (!values.fullName || !values.cpf || !values.email || !values.mobile || !values.birthDate || !values.sex || !values.courseId || !values.classId) return { error: "Preencha todos os campos do aluno." };
+    if (!studentUtils.isValidCpf(values.cpf)) return { error: "Informe um CPF válido." };
+    if (!studentUtils.isValidEmail(values.email)) return { error: "Informe um e-mail válido." };
+    if (!studentUtils.isValidMobile(values.mobile)) return { error: "Informe um celular válido com DDD." };
+    if (!studentUtils.isValidBirthDate(values.birthDate)) return { error: "Informe uma data de nascimento válida." };
+    if (!db.classes.some((item) => item.id === values.classId && item.course_id === values.courseId && item.is_active)) return { error: "Selecione uma turma ativa do curso informado." };
+    return values;
+  }
+  async function saveStudent() {
+    const values = readStudentForm();
+    const node = document.getElementById("studentFormError");
+    if (values.error) return node.textContent = values.error;
+    const editing = Boolean(studentFormContext?.studentId);
+    const rpc = editing ? "update_student_with_enrollment" : "create_student_with_enrollment";
+    const payload = {
+      target_organization_id: orgId(),
+      student_full_name: values.fullName,
+      student_cpf: values.cpf,
+      student_email: values.email,
+      student_mobile: values.mobile,
+      student_birth_date: values.birthDate,
+      student_sex: values.sex,
+      target_course_id: values.courseId,
+      target_class_id: values.classId,
+    };
+    if (editing) payload.target_student_id = studentFormContext.studentId;
+    busy(true);
+    try {
+      const result = await db.client.rpc(rpc, payload);
+      if (result.error) throw result.error;
+      const saved = Array.isArray(result.data) ? result.data[0] : result.data;
+      if (studentFormContext?.returnToRequest) {
+        requestDraft.student = saved;
+        renderRequestDialog();
+        notify("Aluno cadastrado e selecionado.");
+      } else {
+        closeModal();
+        await refresh("students");
+        notify(editing ? "Aluno atualizado." : "Aluno cadastrado.");
+      }
+    } catch (error) {
+      node.textContent = errorText(error, "Não foi possível salvar o aluno.");
+    } finally { busy(false); }
+  }
+  window.confirmDeleteStudent = function (studentId) {
+    if (!isAdmin()) return notify("Somente administradores podem excluir alunos.");
+    const item = student(studentId);
+    if (!item) return;
+    dialog("Excluir aluno", `<p>Deseja excluir o cadastro de <strong>${esc(item.full_name)}</strong>? A exclusão será bloqueada se houver requerimentos vinculados.</p>`, "Excluir aluno", async () => {
+      const result = await db.client.rpc("delete_student", { target_organization_id: orgId(), target_student_id: studentId });
+      if (result.error) return notify(errorText(result.error, "Não foi possível excluir o aluno."));
+      closeModal(); await refresh("students"); notify("Aluno excluído.");
+    }, true);
+  };
+
   window.refreshRequests = async function () { try { await refresh(document.querySelector(".view.active")?.id || "requests"); notify("Dados atualizados."); } catch (e) { notify(errorText(e, "Falha ao atualizar os dados.")); } };
   window.openModal = function () {
-    const available = db.types.filter((x) => x.is_active && db.steps.some((s) => s.request_type_id === x.id));
-    const people = isAdmin() ? db.adminUsers.filter((x) => x.is_active) : [{ id: db.user.id, full_name: db.profile.full_name }];
-    dialog("Novo requerimento", `<div class="form-grid"><div class="field"><label>Tipo</label><select id="newTicketType">${available.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join("")}</select></div><div class="field"><label>Solicitante</label><select id="newTicketRequester" ${isAdmin() ? "" : "disabled"}>${people.map((x) => `<option value="${x.id}">${esc(x.full_name)}</option>`).join("")}</select></div></div><div class="field"><label>Descrição</label><textarea id="newTicketDescription" maxlength="4000"></textarea></div><div class="field"><label>Anexos (PDF, JPG ou PNG; até 10 MB)</label><input id="newTicketFiles" type="file" accept="application/pdf,image/jpeg,image/png" multiple></div><div id="newTicketError" class="text-destructive text-small"></div>`, "Criar requerimento", createRequest);
+    const available = db.types.filter((item) => item.is_active && db.steps.some((step) => step.request_type_id === item.id));
+    requestDraft = { typeId: available[0]?.id || "", description: "", files: [], student: null };
+    renderRequestDialog();
+  };
+  function captureRequestDraft() {
+    if (!requestDraft) requestDraft = { typeId: "", description: "", files: [], student: null };
+    requestDraft.typeId = document.getElementById("newTicketType")?.value || requestDraft.typeId;
+    requestDraft.description = document.getElementById("newTicketDescription")?.value || requestDraft.description;
+    const files = [...(document.getElementById("newTicketFiles")?.files || [])];
+    if (files.length) requestDraft.files = files;
+  }
+  function renderRequestDialog() {
+    const available = db.types.filter((item) => item.is_active && db.steps.some((step) => step.request_type_id === item.id));
+    if (!requestDraft) requestDraft = { typeId: available[0]?.id || "", description: "", files: [], student: null };
+    if (!isStaff()) {
+      dialog("Novo requerimento", `<div class="form-grid"><div class="field"><label for="newTicketType">Tipo</label><select id="newTicketType">${available.map((item) => `<option value="${item.id}" ${requestDraft.typeId === item.id ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select></div><div class="field"><label for="newTicketRequester">Aluno</label><input id="newTicketRequester" value="${esc(db.profile.full_name)}" disabled></div></div><div class="field"><label for="newTicketDescription">Descrição</label><textarea id="newTicketDescription" maxlength="4000">${esc(requestDraft.description)}</textarea></div><div class="field"><label for="newTicketFiles">Anexos (PDF, JPG ou PNG; até 10 MB)</label><input id="newTicketFiles" type="file" accept="application/pdf,image/jpeg,image/png" multiple onchange="storeRequestFiles(this.files)"></div><div id="newTicketError" class="text-destructive text-small" role="alert"></div>`, "Criar requerimento", createRequest);
+      return;
+    }
+    const selectedName = requestDraft.student?.full_name || "";
+    const selectedCpf = requestDraft.student?.cpf_digits ? studentUtils.formatCpf(requestDraft.student.cpf_digits) : "";
+    dialog("Novo requerimento", `<div class="field"><label for="newTicketType">Tipo</label><select id="newTicketType">${available.map((item) => `<option value="${item.id}" ${requestDraft.typeId === item.id ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select></div><div class="student-combobox"><div class="field"><label for="studentRequesterSearch">Aluno</label><input id="studentRequesterSearch" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="studentRequesterOptions" autocomplete="off" placeholder="Digite o nome ou CPF" value="${esc(selectedName)}" oninput="searchTicketStudents(this.value)" onkeydown="handleStudentSearchKey(event)" onblur="closeStudentSearchSoon()"></div><div class="student-options" id="studentRequesterOptions" role="listbox" hidden></div></div><button type="button" class="link quick-link" onclick="openQuickStudentForm()">+ Cadastro rápido de aluno</button>${selectedCpf ? `<div class="preserved-files">CPF selecionado: ${esc(selectedCpf)}</div>` : ""}<div class="field"><label for="newTicketDescription">Descrição</label><textarea id="newTicketDescription" maxlength="4000">${esc(requestDraft.description)}</textarea></div><div class="field"><label for="newTicketFiles">Anexos (PDF, JPG ou PNG; até 10 MB)</label><input id="newTicketFiles" type="file" accept="application/pdf,image/jpeg,image/png" multiple onchange="storeRequestFiles(this.files)"></div>${requestDraft.files.length ? `<div class="preserved-files">${requestDraft.files.length} arquivo(s) preservado(s) neste formulário.</div>` : ""}<div id="newTicketError" class="text-destructive text-small" role="alert"></div>`, "Criar requerimento", createRequest);
+    const modal = document.querySelector("#modal .modal");
+    modal?.setAttribute("role", "dialog");
+    modal?.setAttribute("aria-modal", "true");
+    setTimeout(() => document.getElementById("studentRequesterSearch")?.focus(), 0);
+  }
+  window.storeRequestFiles = function (files) { if (requestDraft) requestDraft.files = [...files]; };
+  window.openQuickStudentForm = function () {
+    captureRequestDraft();
+    if (!db.courses.some((item) => item.is_active) || !db.classes.some((item) => item.is_active)) {
+      return document.getElementById("newTicketError").textContent = "Cadastre primeiro um curso e uma turma ativos.";
+    }
+    openStudentForm("", true);
+  };
+  function renderStudentSearchOptions(message = "") {
+    const list = document.getElementById("studentRequesterOptions");
+    const input = document.getElementById("studentRequesterSearch");
+    if (!list || !input) return;
+    if (message) list.innerHTML = `<div class="student-search-state">${esc(message)}</div>`;
+    else list.innerHTML = studentSearchResults.map((item, index) => `<button type="button" class="student-option ${index === studentSearchActive ? "active" : ""}" id="studentRequesterOption${index}" role="option" aria-selected="${index === studentSearchActive}" onmousedown="event.preventDefault()" onclick="selectTicketStudent(${index})"><strong>${esc(item.full_name)}</strong><span>${esc(studentUtils.formatCpf(item.cpf_digits))}</span></button>`).join("");
+    list.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    if (studentSearchActive >= 0) input.setAttribute("aria-activedescendant", `studentRequesterOption${studentSearchActive}`);
+    else input.removeAttribute("aria-activedescendant");
+  }
+  window.searchTicketStudents = function (value) {
+    if (!requestDraft) return;
+    requestDraft.student = null;
+    studentSearchActive = -1;
+    clearTimeout(studentSearchTimer);
+    const sequence = ++studentSearchSequence;
+    const query = value.trim();
+    if (!query) {
+      studentSearchResults = [];
+      const list = document.getElementById("studentRequesterOptions");
+      const input = document.getElementById("studentRequesterSearch");
+      if (list) list.hidden = true;
+      if (input) input.setAttribute("aria-expanded", "false");
+      return;
+    }
+    renderStudentSearchOptions("Buscando alunos...");
+    studentSearchTimer = setTimeout(async () => {
+      const result = await db.client.rpc("search_students", { target_organization_id: orgId(), search_term: query, result_limit: 8 });
+      if (sequence !== studentSearchSequence) return;
+      if (result.error) {
+        studentSearchResults = [];
+        return renderStudentSearchOptions("Não foi possível buscar os alunos.");
+      }
+      studentSearchResults = result.data || [];
+      renderStudentSearchOptions(studentSearchResults.length ? "" : "Nenhum aluno encontrado.");
+    }, 180);
+  };
+  window.handleStudentSearchKey = function (event) {
+    if (!studentSearchResults.length) return;
+    if (event.key === "ArrowDown") studentSearchActive = Math.min(studentSearchActive + 1, studentSearchResults.length - 1);
+    else if (event.key === "ArrowUp") studentSearchActive = Math.max(studentSearchActive - 1, 0);
+    else if (event.key === "Enter" && studentSearchActive >= 0) { event.preventDefault(); return selectTicketStudent(studentSearchActive); }
+    else if (event.key === "Escape") {
+      const list = document.getElementById("studentRequesterOptions");
+      if (list) list.hidden = true;
+      event.currentTarget.setAttribute("aria-expanded", "false");
+      return;
+    } else return;
+    event.preventDefault();
+    renderStudentSearchOptions();
+  };
+  window.selectTicketStudent = function (index) {
+    const selected = studentSearchResults[index];
+    if (!selected || !requestDraft) return;
+    requestDraft.student = selected;
+    const input = document.getElementById("studentRequesterSearch");
+    const list = document.getElementById("studentRequesterOptions");
+    if (input) { input.value = selected.full_name; input.setAttribute("aria-expanded", "false"); input.removeAttribute("aria-activedescendant"); }
+    if (list) list.hidden = true;
+  };
+  window.closeStudentSearchSoon = function () {
+    setTimeout(() => {
+      const list = document.getElementById("studentRequesterOptions");
+      const input = document.getElementById("studentRequesterSearch");
+      if (list) list.hidden = true;
+      if (input) input.setAttribute("aria-expanded", "false");
+    }, 120);
   };
 
   window.createRequest = async function () {
-    const typeId = document.getElementById("newTicketType")?.value;
-    const requesterId = document.getElementById("newTicketRequester")?.value || db.user.id;
-    const description = document.getElementById("newTicketDescription")?.value.trim();
-    const files = [...(document.getElementById("newTicketFiles")?.files || [])];
+    captureRequestDraft();
+    const typeId = requestDraft.typeId;
+    const description = requestDraft.description.trim();
+    const files = requestDraft.files;
     const errorNode = document.getElementById("newTicketError");
     if (!typeId || !description) return errorNode.textContent = "Selecione o tipo e informe a descrição.";
+    if (isStaff() && !requestDraft.student?.student_id) return errorNode.textContent = "Pesquise e selecione um aluno cadastrado.";
     if (files.some((f) => f.size > 10485760 || !["application/pdf", "image/jpeg", "image/png"].includes(f.type))) return errorNode.textContent = "Cada anexo deve ser PDF, JPG ou PNG e ter no máximo 10 MB.";
     busy(true);
     try {
-      const created = await db.client.from("requests").insert({ organization_id: orgId(), request_type_id: typeId, requester_id: requesterId, description }).select().single();
+      const created = isStaff()
+        ? await db.client.rpc("create_request_for_student", {
+            target_organization_id: orgId(),
+            target_request_type_id: typeId,
+            target_student_id: requestDraft.student.student_id,
+            target_enrollment_id: requestDraft.student.enrollment_id,
+            request_description: description,
+          })
+        : await db.client.from("requests").insert({ organization_id: orgId(), request_type_id: typeId, requester_id: db.user.id, description }).select().single();
       if (created.error) throw created.error;
+      const createdRequest = Array.isArray(created.data) ? created.data[0] : created.data;
       for (const file of files) {
-        const path = `${orgId()}/${created.data.id}/${db.user.id}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+        const path = `${orgId()}/${createdRequest.id}/${db.user.id}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
         const uploaded = await db.client.storage.from("request-documents").upload(path, file);
         if (uploaded.error) throw uploaded.error;
-        const record = await db.client.from("request_attachments").insert({ organization_id: orgId(), request_id: created.data.id, uploaded_by: db.user.id, storage_path: path, file_name: file.name, mime_type: file.type, size_bytes: file.size });
+        const record = await db.client.from("request_attachments").insert({ organization_id: orgId(), request_id: createdRequest.id, uploaded_by: db.user.id, storage_path: path, file_name: file.name, mime_type: file.type, size_bytes: file.size });
         if (record.error) { await db.client.storage.from("request-documents").remove([path]); throw record.error; }
       }
-      closeModal(); await refresh("requests"); notify(`Requerimento ${created.data.protocol} criado com sucesso.`);
+      requestDraft = null;
+      closeModal(); await refresh("requests"); notify(`Requerimento ${createdRequest.protocol} criado com sucesso.`);
     } catch (e) { errorNode.textContent = errorText(e, "Não foi possível criar o requerimento."); }
     finally { busy(false); }
   };
@@ -247,7 +503,7 @@
       ]);
       if (events.error || files.error) throw events.error || files.error;
       const canProcess = isStaff() && !["completed", "rejected", "canceled"].includes(item.status);
-      dialog(`Requerimento ${esc(item.protocol)}`, `<div class="form-grid"><div><span class="sub">Solicitante</span><strong>${esc(person(item.requester_id))}</strong></div><div><span class="sub">Tipo</span><strong>${esc(requestType(item.request_type_id))}</strong></div><div><span class="sub">Departamento</span><strong>${esc(department(item.current_department_id))}</strong></div><div><span class="sub">Abertura</span><strong>${esc(when(item.created_at))}</strong></div></div><h3 style="margin:22px 0 8px">Descrição</h3><p>${esc(item.description || "Sem descrição.")}</p><h3 style="margin:22px 0 8px">Documentos</h3><div class="file-list">${(files.data || []).map((f) => `<div class="doc"><div><strong>${esc(f.file_name)}</strong><small>${esc(f.mime_type)} · ${(f.size_bytes / 1048576).toFixed(2)} MB</small></div><button class="link" onclick="downloadAttachment('${f.storage_path.replaceAll("'", "")}')">Abrir</button></div>`).join("") || '<span class="sub">Nenhum documento anexado.</span>'}</div><h3 style="margin:22px 0 8px">Histórico</h3><div class="timeline">${(events.data || []).map((e) => `<div class="event"><div class="dot"></div><div><strong>${esc(e.note || statuses[e.to_status] || e.event_type)}</strong><small>${esc(person(e.actor_id))} · ${esc(when(e.created_at))}</small></div></div>`).join("")}</div><div class="field"><label>Observação</label><textarea id="ticketObservation" maxlength="2000"></textarea></div><div class="actions"><button class="btn" onclick="addTicketNote('${id}')">Salvar observação</button>${canProcess ? `<button class="btn" onclick="requestTicketComplement('${id}')">Solicitar complemento</button><button class="btn primary" onclick="processTicket('${id}')">Concluir e encaminhar</button>` : ""}</div>`, "Fechar", closeModal);
+      dialog(`Requerimento ${esc(item.protocol)}`, `<div class="form-grid"><div><span class="sub">Aluno</span><strong>${esc(requestStudent(item))}</strong></div><div><span class="sub">Tipo</span><strong>${esc(requestType(item.request_type_id))}</strong></div><div><span class="sub">Departamento</span><strong>${esc(department(item.current_department_id))}</strong></div><div><span class="sub">Abertura</span><strong>${esc(when(item.created_at))}</strong></div></div><h3 style="margin:22px 0 8px">Descrição</h3><p>${esc(item.description || "Sem descrição.")}</p><h3 style="margin:22px 0 8px">Documentos</h3><div class="file-list">${(files.data || []).map((f) => `<div class="doc"><div><strong>${esc(f.file_name)}</strong><small>${esc(f.mime_type)} · ${(f.size_bytes / 1048576).toFixed(2)} MB</small></div><button class="link" onclick="downloadAttachment('${f.storage_path.replaceAll("'", "")}')">Abrir</button></div>`).join("") || '<span class="sub">Nenhum documento anexado.</span>'}</div><h3 style="margin:22px 0 8px">Histórico</h3><div class="timeline">${(events.data || []).map((e) => `<div class="event"><div class="dot"></div><div><strong>${esc(e.note || statuses[e.to_status] || e.event_type)}</strong><small>${esc(person(e.actor_id))} · ${esc(when(e.created_at))}</small></div></div>`).join("")}</div><div class="field"><label>Observação</label><textarea id="ticketObservation" maxlength="2000"></textarea></div><div class="actions"><button class="btn" onclick="addTicketNote('${id}')">Salvar observação</button>${canProcess ? `<button class="btn" onclick="requestTicketComplement('${id}')">Solicitar complemento</button><button class="btn primary" onclick="processTicket('${id}')">Concluir e encaminhar</button>` : ""}</div>`, "Fechar", closeModal);
     } catch (e) { notify(errorText(e, "Não foi possível abrir o requerimento.")); }
     finally { busy(false); }
   };
@@ -283,6 +539,7 @@
     if (!isAdmin()) return;
     if (activeSettings === "users") return renderStaff();
     if (activeSettings === "departments") return renderDepartments();
+    if (activeSettings === "academic") return renderAcademic();
     return renderRequirements();
   };
   function settingsHeader(title, action) {
@@ -317,6 +574,7 @@
   window.settingsAdd = function () {
     if (activeSettings === "users") return dialog("Cadastrar usuário", userForm(null), "Criar credencial", saveNewUser);
     if (activeSettings === "departments") return dialog("Novo departamento", '<div class="field"><label>Nome</label><input id="newDepartmentName"></div><div class="field"><label>Responsabilidade</label><input id="newDepartmentPurpose"></div><div id="departmentError" class="text-destructive text-small"></div>', "Criar departamento", saveNewDepartment);
+    if (activeSettings === "academic") return openCourseForm();
     dialog("Novo tipo", `<div class="field"><label>Nome</label><input id="requirementName"></div><div class="field"><label>Descrição</label><input id="requirementDescription"></div><div class="form-grid"><div class="field"><label>Primeiro departamento</label><select id="requirementDepartment">${departmentOptions("")}</select></div><div class="field"><label>Prazo (dias úteis)</label><input id="requirementDeadline" type="number" min="0" max="365" value="5"></div></div><div id="requirementError" class="text-destructive text-small"></div>`, "Criar tipo", saveNewType);
   };
   window.saveNewUser = async function () {
@@ -360,6 +618,37 @@
       const result = await db.client.from("departments").update(values).eq("id", id);
       if (result.error) return document.getElementById("departmentError").textContent = errorText(result.error, "Não foi possível atualizar.");
       closeModal(); activeSettings = "departments"; await refresh("settings"); notify("Departamento atualizado.");
+    });
+  };
+
+  function renderAcademic() {
+    settingsHeader("Cursos e turmas", "+ Novo curso");
+    const courseRows = db.courses.map((item) => `<tr class="${item.is_active ? "" : "user-inactive"}"><td><strong>${esc(item.name)}</strong></td><td><span class="status-dot ${item.is_active ? "" : "inactive"}"></span>${item.is_active ? "Ativo" : "Inativo"}</td><td><button class="link" onclick="openCourseForm('${item.id}')">Editar</button></td></tr>`).join("") || '<tr><td colspan="3" class="backend-empty">Nenhum curso cadastrado.</td></tr>';
+    const classRows = db.classes.map((item) => `<tr class="${item.is_active ? "" : "user-inactive"}"><td><strong>${esc(item.name)}</strong></td><td>${esc(course(item.course_id))}</td><td><span class="status-dot ${item.is_active ? "" : "inactive"}"></span>${item.is_active ? "Ativa" : "Inativa"}</td><td><button class="link" onclick="openCourseClassForm('${item.id}')">Editar</button></td></tr>`).join("") || '<tr><td colspan="4" class="backend-empty">Nenhuma turma cadastrada.</td></tr>';
+    document.getElementById("settingsContent").innerHTML = `<div class="catalog-grid"><article class="panel"><div class="panel-head"><div><h2>Cursos</h2><span class="sub">Cadastros disponíveis para os alunos.</span></div></div><table class="table"><thead><tr><th>Curso</th><th>Status</th><th></th></tr></thead><tbody>${courseRows}</tbody></table></article><article class="panel"><div class="panel-head"><div><h2>Turmas</h2><span class="sub">Cada turma pertence a um único curso.</span></div><button class="btn primary" onclick="openCourseClassForm()">+ Nova turma</button></div><table class="table"><thead><tr><th>Turma</th><th>Curso</th><th>Status</th><th></th></tr></thead><tbody>${classRows}</tbody></table></article></div>`;
+  }
+  window.openCourseForm = function (courseId = "") {
+    const item = db.courses.find((value) => value.id === courseId);
+    dialog(item ? "Editar curso" : "Novo curso", `<div class="field"><label for="courseName">Nome do curso</label><input id="courseName" maxlength="160" value="${esc(item?.name || "")}" placeholder="Ex.: Administração"></div><div class="field"><label for="courseActive">Status</label><select id="courseActive"><option value="true" ${item?.is_active !== false ? "selected" : ""}>Ativo</option><option value="false" ${item?.is_active === false ? "selected" : ""}>Inativo</option></select></div><div id="courseError" class="text-destructive text-small" role="alert"></div>`, item ? "Salvar curso" : "Criar curso", async () => {
+      const name = document.getElementById("courseName").value.trim();
+      const node = document.getElementById("courseError");
+      if (name.length < 2) return node.textContent = "Informe o nome do curso.";
+      const result = await db.client.rpc("save_course", { target_organization_id: orgId(), target_course_id: item?.id || null, course_name: name, course_active: document.getElementById("courseActive").value === "true" });
+      if (result.error) return node.textContent = errorText(result.error, "Não foi possível salvar o curso.");
+      closeModal(); activeSettings = "academic"; await refresh("settings"); notify(item ? "Curso atualizado." : "Curso criado.");
+    });
+  };
+  window.openCourseClassForm = function (classId = "") {
+    const item = db.classes.find((value) => value.id === classId);
+    if (!item && !db.courses.some((value) => value.is_active)) return notify("Cadastre um curso ativo antes da turma.");
+    dialog(item ? "Editar turma" : "Nova turma", `<div class="field"><label for="className">Nome da turma</label><input id="className" maxlength="120" value="${esc(item?.name || "")}" placeholder="Ex.: ADM 2026.1"></div><div class="field"><label for="classCourse">Curso</label><select id="classCourse" ${item ? "disabled" : ""}>${courseOptions(item?.course_id || "")}</select></div><div class="field"><label for="classActive">Status</label><select id="classActive"><option value="true" ${item?.is_active !== false ? "selected" : ""}>Ativa</option><option value="false" ${item?.is_active === false ? "selected" : ""}>Inativa</option></select></div><div id="classError" class="text-destructive text-small" role="alert"></div>`, item ? "Salvar turma" : "Criar turma", async () => {
+      const name = document.getElementById("className").value.trim();
+      const courseId = item?.course_id || document.getElementById("classCourse").value;
+      const node = document.getElementById("classError");
+      if (!name || !courseId) return node.textContent = "Informe o nome e o curso da turma.";
+      const result = await db.client.rpc("save_course_class", { target_organization_id: orgId(), target_class_id: item?.id || null, target_course_id: courseId, class_name: name, class_active: document.getElementById("classActive").value === "true" });
+      if (result.error) return node.textContent = errorText(result.error, "Não foi possível salvar a turma.");
+      closeModal(); activeSettings = "academic"; await refresh("settings"); notify(item ? "Turma atualizada." : "Turma criada.");
     });
   };
 

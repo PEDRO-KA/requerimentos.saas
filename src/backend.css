@@ -20,4 +20,20 @@
 .workflow-step-actions button:disabled,.workflow-editor+button:disabled{opacity:.45;cursor:not-allowed}
 .workflow-remove{color:#be123c}
 .workflow-terminal{grid-template-columns:30px 1fr;background:#eaf7ef;border-color:#b7dfc7}
-@media(max-width:760px){.profile .logout-link{padding-left:0}.workflow-step-row{grid-template-columns:30px 1fr}.workflow-step-actions{grid-column:2}}
+.student-combobox{position:relative}
+.student-combobox .field{margin-bottom:5px}
+.student-options{position:absolute;z-index:30;top:100%;left:0;right:0;max-height:250px;overflow:auto;margin:3px 0 0;padding:5px;border:1px solid #cbd5e1;border-radius:9px;background:#fff;box-shadow:0 14px 34px rgba(15,42,67,.18)}
+.student-options[hidden]{display:none}
+.student-option{display:block;width:100%;padding:10px 11px;border:0;border-radius:7px;background:#fff;color:#123b63;text-align:left;cursor:pointer}
+.student-option:hover,.student-option.active{background:#eaf2f8}
+.student-option strong,.student-option span{display:block}
+.student-option span{margin-top:2px;color:#64748b;font-size:12px}
+.student-search-state{padding:12px;color:#64748b;text-align:center}
+.quick-link{display:inline-block;margin:2px 0 14px}
+.preserved-files{margin:-7px 0 12px;color:#64748b;font-size:12px}
+.student-contact{display:grid;gap:2px}
+.catalog-grid{display:grid;grid-template-columns:1fr 1.15fr;gap:18px}
+.catalog-grid .panel{min-width:0}
+.student-form-help{margin:-4px 0 14px;color:#64748b;font-size:12px}
+.student-status{display:inline-flex;align-items:center}
+@media(max-width:760px){.profile .logout-link{padding-left:0}.workflow-step-row{grid-template-columns:30px 1fr}.workflow-step-actions{grid-column:2}.catalog-grid{grid-template-columns:1fr}.student-options{position:static}}
