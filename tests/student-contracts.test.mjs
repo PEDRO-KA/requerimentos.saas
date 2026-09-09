@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const [migration, app] = await Promise.all([
+const [migration, app, lintFix] = await Promise.all([
   readFile(new URL("../supabase/migrations/202609080001_students_courses_classes.sql", import.meta.url), "utf8"),
   readFile(new URL("../src/supabase-app.js", import.meta.url), "utf8"),
+  readFile(new URL("../supabase/migrations/202609090001_fix_student_rpc_lint.sql", import.meta.url), "utf8"),
 ]);
 
 test("mantém operador e aluno como identidades separadas no requerimento", () => {
@@ -44,4 +45,10 @@ test("limita a busca a vínculos ativos e evita PII no log de aluno", () => {
   assert.match(searchFunction, /join public\.course_classes[\s\S]*cc\.is_active/);
   assert.match(searchFunction, /translate\(/);
   assert.doesNotMatch(auditFunction, /cpf_digits|email|mobile_digits|birth_date/);
+});
+
+test("mantém a função de edição sem referências ambíguas", () => {
+  assert.match(lintFix, /from public\.student_enrollments as e[\s\S]*e\.student_id = target_student_id/);
+  assert.match(lintFix, /update public\.students as s/);
+  assert.doesNotMatch(lintFix, /digit_position integer/);
 });
