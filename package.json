@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "node scripts/check.mjs",
+    "test": "node --test",
     "setup:admin": "node scripts/bootstrap-admin.mjs",
     "supabase": "supabase"
   },
