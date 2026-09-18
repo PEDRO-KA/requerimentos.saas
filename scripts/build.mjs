@@ -26,6 +26,7 @@ const publicConfig = JSON.stringify({ url, publishableKey }).replaceAll("<", "\\
 source = source.replace("</head>", '  <link rel="stylesheet" href="./backend.css">\n</head>');
 source = source.replace("</body>", `  <script>window.__SUPABASE_CONFIG__=${publicConfig};</script>\n  <script src="./supabase.js"></script>\n  <script src="./supabase-app.js"></script>\n</body>`);
 source = source.replace('<script src="./supabase-app.js"></script>', '<script src="./student-utils.js"></script>\n  <script src="./supabase-app.js"></script>');
+source = source.replace('<script src="./supabase-app.js"></script>', '<script src="./request-utils.js"></script>\n  <script src="./supabase-app.js"></script>');
 
 const dist = path.join(root, "dist");
 const supabaseBundle = await readFile(
@@ -37,6 +38,7 @@ await Promise.all([
   writeFile(path.join(dist, "index.html"), source, "utf8"),
   copyFile(path.join(root, "src", "backend.css"), path.join(dist, "backend.css")),
   copyFile(path.join(root, "src", "student-utils.js"), path.join(dist, "student-utils.js")),
+  copyFile(path.join(root, "src", "request-utils.js"), path.join(dist, "request-utils.js")),
   copyFile(path.join(root, "src", "supabase-app.js"), path.join(dist, "supabase-app.js")),
   writeFile(path.join(dist, "supabase.js"), `${supabaseBundle.trimEnd()}\n`, "utf8"),
   copyFile(path.join(root, "ObtemLogos 02.jpg"), path.join(dist, "ObtemLogos 02.jpg")),

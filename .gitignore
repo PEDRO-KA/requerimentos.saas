@@ -2,7 +2,9 @@ node_modules/
 .env
 .env.*
 !.env.example
+!**/.env.example
 .supabase/
 supabase/.branches/
 supabase/.temp/
+.sites-runtime/
 *.log

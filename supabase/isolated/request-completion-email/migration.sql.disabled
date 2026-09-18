@@ -1,0 +1,293 @@
+-- ISOLATED: not executed by Supabase CLI.
+-- Restore only after separate approval for Resend, secrets, migration and production email validation.
+
+create type public.email_delivery_status as enum (
+  'pending',
+  'processing',
+  'sent',
+  'failed'
+);
+
+create table public.request_email_deliveries (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  request_id uuid not null,
+  student_id uuid not null,
+  template_key text not null default 'request_completed'
+    check (template_key = 'request_completed'),
+  status public.email_delivery_status not null default 'pending',
+  attempt_count integer not null default 0 check (attempt_count between 0 and 5),
+  first_attempt_at timestamptz,
+  next_attempt_at timestamptz default now(),
+  locked_at timestamptz,
+  provider_message_id text,
+  last_error_code text,
+  sent_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  foreign key (request_id, organization_id)
+    references public.requests(id, organization_id)
+    on delete cascade,
+  foreign key (student_id, organization_id)
+    references public.students(id, organization_id)
+    on delete restrict,
+  unique (request_id, template_key)
+);
+
+create index request_email_deliveries_pending_idx
+on public.request_email_deliveries (status, next_attempt_at, created_at)
+where status in ('pending', 'failed');
+
+create trigger request_email_deliveries_set_updated_at
+before update on public.request_email_deliveries
+for each row execute function public.set_updated_at();
+
+alter table public.request_email_deliveries enable row level security;
+revoke all on table public.request_email_deliveries from public, anon, authenticated;
+
+create or replace function public.queue_request_completion_email()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if new.student_id is not null then
+    insert into public.request_email_deliveries (
+      organization_id,
+      request_id,
+      student_id
+    )
+    values (
+      new.organization_id,
+      new.id,
+      new.student_id
+    )
+    on conflict (request_id, template_key) do nothing;
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger requests_queue_completion_email
+after update of status on public.requests
+for each row
+when (old.status is distinct from new.status and new.status = 'completed')
+execute function public.queue_request_completion_email();
+
+create or replace function public.claim_request_email_deliveries(
+  p_limit integer default 10,
+  p_request_id uuid default null
+)
+returns table (
+  delivery_id uuid,
+  target_request_id uuid,
+  recipient_email text,
+  student_name text,
+  request_protocol text,
+  request_type_name text,
+  delivery_attempt_count integer
+)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  update public.request_email_deliveries as expired
+  set
+    next_attempt_at = null,
+    last_error_code = 'retry_window_expired'
+  where expired.status = 'failed'
+    and expired.next_attempt_at is not null
+    and expired.first_attempt_at < now() - interval '23 hours';
+
+  update public.request_email_deliveries as stale
+  set
+    status = 'failed',
+    locked_at = null,
+    next_attempt_at = case
+      when stale.attempt_count >= 5
+        or stale.first_attempt_at < now() - interval '23 hours'
+      then null
+      else now()
+    end,
+    last_error_code = case
+      when stale.first_attempt_at < now() - interval '23 hours'
+      then 'stale_processing_expired'
+      else 'stale_processing_recovered'
+    end
+  where stale.status = 'processing'
+    and stale.locked_at < now() - interval '15 minutes';
+
+  return query
+  with candidates as (
+    select queued.id
+    from public.request_email_deliveries as queued
+    where queued.status in ('pending', 'failed')
+      and queued.attempt_count < 5
+      and queued.next_attempt_at <= now()
+      and (p_request_id is null or queued.request_id = p_request_id)
+    order by queued.created_at
+    for update of queued skip locked
+    limit greatest(1, least(coalesce(p_limit, 10), 50))
+  ), claimed as (
+    update public.request_email_deliveries as queued
+    set
+      status = 'processing',
+      attempt_count = queued.attempt_count + 1,
+      first_attempt_at = coalesce(queued.first_attempt_at, now()),
+      locked_at = now(),
+      next_attempt_at = null,
+      last_error_code = null
+    from candidates
+    where queued.id = candidates.id
+    returning queued.*
+  )
+  select
+    claimed.id,
+    claimed.request_id,
+    student.email,
+    student.full_name,
+    request.protocol,
+    request_type.name,
+    claimed.attempt_count
+  from claimed
+  join public.requests as request on request.id = claimed.request_id
+  join public.students as student on student.id = claimed.student_id
+  join public.request_types as request_type on request_type.id = request.request_type_id;
+end;
+$$;
+
+create or replace function public.mark_request_email_delivery_sent(
+  p_delivery_id uuid,
+  p_provider_message_id text
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  update public.request_email_deliveries as delivery
+  set
+    status = 'sent',
+    provider_message_id = left(coalesce(p_provider_message_id, ''), 160),
+    last_error_code = null,
+    locked_at = null,
+    next_attempt_at = null,
+    sent_at = now()
+  where delivery.id = p_delivery_id
+    and delivery.status = 'processing';
+
+  return found;
+end;
+$$;
+
+create or replace function public.mark_request_email_delivery_failed(
+  p_delivery_id uuid,
+  p_error_code text
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  update public.request_email_deliveries as delivery
+  set
+    status = 'failed',
+    last_error_code = left(coalesce(p_error_code, 'delivery_failed'), 120),
+    locked_at = null,
+    next_attempt_at = case
+      when delivery.attempt_count >= 5 then null
+      else now() + interval '5 minutes'
+    end
+  where delivery.id = p_delivery_id
+    and delivery.status = 'processing';
+
+  return found;
+end;
+$$;
+
+revoke all on function public.claim_request_email_deliveries(integer, uuid)
+from public, anon, authenticated;
+revoke all on function public.mark_request_email_delivery_sent(uuid, text)
+from public, anon, authenticated;
+revoke all on function public.mark_request_email_delivery_failed(uuid, text)
+from public, anon, authenticated;
+grant execute on function public.claim_request_email_deliveries(integer, uuid)
+to service_role;
+grant execute on function public.mark_request_email_delivery_sent(uuid, text)
+to service_role;
+grant execute on function public.mark_request_email_delivery_failed(uuid, text)
+to service_role;
+
+create extension if not exists pg_net with schema extensions;
+create extension if not exists pg_cron;
+create extension if not exists supabase_vault with schema vault;
+
+create or replace function public.invoke_request_email_dispatch()
+returns bigint
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  project_url text;
+  dispatch_secret text;
+  network_request_id bigint;
+begin
+  select secret.decrypted_secret into project_url
+  from vault.decrypted_secrets as secret
+  where secret.name = 'project_url'
+  limit 1;
+
+  select secret.decrypted_secret into dispatch_secret
+  from vault.decrypted_secrets as secret
+  where secret.name = 'email_dispatch_secret'
+  limit 1;
+
+  if nullif(project_url, '') is null or nullif(dispatch_secret, '') is null then
+    return null;
+  end if;
+
+  select net.http_post(
+    url := rtrim(project_url, '/') || '/functions/v1/dispatch-request-emails',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'X-Email-Dispatch-Secret', dispatch_secret
+    ),
+    body := '{}'::jsonb,
+    timeout_milliseconds := 10000
+  ) into network_request_id;
+
+  return network_request_id;
+end;
+$$;
+
+revoke all on function public.invoke_request_email_dispatch()
+from public, anon, authenticated;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from cron.job as job
+    where job.jobname = 'request-email-dispatch-every-five-minutes'
+  ) then
+    perform cron.schedule(
+      'request-email-dispatch-every-five-minutes',
+      '*/5 * * * *',
+      'select public.invoke_request_email_dispatch();'
+    );
+  end if;
+end;
+$$;
+
+revoke all on function public.snapshot_request_event()
+from public, anon, authenticated;
+revoke all on function public.track_request_department_entry()
+from public, anon, authenticated;
+revoke all on function public.queue_request_completion_email()
+from public, anon, authenticated;

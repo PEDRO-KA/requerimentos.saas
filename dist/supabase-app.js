@@ -5,6 +5,7 @@
   const badges = { open: "open", in_review: "progress", awaiting_requester: "open", forwarded: "open", completed: "done", rejected: "danger", canceled: "danger" };
   const sexLabels = { female: "Feminino", male: "Masculino", other: "Outro", prefer_not_to_say: "Prefiro não informar" };
   const studentUtils = globalThis.StudentUtils;
+  const requestUtils = globalThis.RequestUtils;
   const db = { client: null, user: null, profile: null, member: null, org: null, departments: [], types: [], steps: [], profiles: [], memberships: [], requests: [], courses: [], classes: [], students: [], enrollments: [], adminUsers: [], recovery: false };
   let studentRegistryQuery = "";
   let requestDraft = null;
@@ -27,6 +28,8 @@
   const course = (id) => db.courses.find((x) => x.id === id)?.name || "Não informado";
   const courseClass = (id) => db.classes.find((x) => x.id === id)?.name || "Não informada";
   const requestStudent = (item) => item?.student?.full_name || student(item?.student_id)?.full_name || person(item?.requester_id);
+  const canActOnRequest = (item) => requestUtils.canActOnRequest(item, db.member);
+  const canAddRequestContent = (item) => requestUtils.canAddRequestContent(item, db.member, db.user?.id);
   const errorText = (e, fallback) => {
     const message = String(e?.message || e || "");
     if (/duplicate|unique/i.test(message)) return "Já existe um cadastro com esses dados.";
@@ -128,6 +131,8 @@
     if (label) label.style.display = isAdmin() ? "" : "none";
     const dashboard = document.querySelector('[data-view="dashboard"]');
     if (dashboard) dashboard.style.display = isStaff() ? "" : "none";
+    const requestCount = document.querySelector('[data-view="requests"] .count');
+    if (requestCount) requestCount.textContent = db.requests.filter((item) => requestUtils.requestScope(item, db.member) === "queue").length;
   }
 
   async function refresh(view) {
@@ -207,17 +212,35 @@
     document.getElementById("dashboard").innerHTML = `<div class="top"><div><div class="crumb">Visão geral / Painel</div><h1>Olá, ${esc(db.profile.full_name.split(" ")[0])}</h1></div><div class="actions"><button class="btn" onclick="showView('portal')">Meu portal</button><button class="btn primary" onclick="openModal()">+ Novo requerimento</button></div></div><div class="metrics"><div class="metric"><div class="label">Em andamento</div><div class="value">${active.length}</div><div class="trend">Dados em tempo real</div></div><div class="metric"><div class="label">Aguardando aluno</div><div class="value">${waiting.length}</div><div class="trend">${overdue} fora do prazo</div></div><div class="metric"><div class="label">Concluídos</div><div class="value">${completed.length}</div><div class="trend">No histórico acessível</div></div><div class="metric"><div class="label">Total visível</div><div class="value">${db.requests.length}</div><div class="trend">Conforme seu perfil</div></div></div><article class="panel"><div class="panel-head"><h2>Requerimentos recentes</h2><button class="link" onclick="showView('requests')">Ver todos</button></div><table class="table"><thead><tr><th>Protocolo</th><th>Aluno</th><th>Tipo</th><th>Status</th></tr></thead><tbody>${db.requests.slice(0, 6).map((x) => `<tr><td><strong>${esc(x.protocol)}</strong><span class="sub">${esc(when(x.created_at))}</span></td><td>${esc(requestStudent(x))}</td><td>${esc(requestType(x.request_type_id))}</td><td><span class="badge ${badges[x.status] || "open"}">${esc(statuses[x.status] || x.status)}</span></td></tr>`).join("") || '<tr><td colspan="4" class="backend-empty">Nenhum requerimento cadastrado.</td></tr>'}</tbody></table></article>`;
   }
 
-  window.setRequestFilter = function (key, value) { requestFilters[key] = value; renderRequests(); };
+  window.setRequestFilter = function (key, value) {
+    if (key === "period") requestFilters.date = "";
+    if (key === "date" && value) requestFilters.period = "all";
+    requestFilters[key] = value;
+    renderRequests();
+  };
   window.renderRequests = function () {
     const f = requestFilters;
-    const now = Date.now();
+    const scopes = [
+      { value: "queue", label: "Minha fila" },
+      { value: "tracking", label: "Em andamento" },
+      { value: "completed", label: "Concluídos" },
+    ];
+    if (!scopes.some((item) => item.value === f.scope)) f.scope = "queue";
+    if (!f.period) f.period = "all";
+    if (!("date" in f)) f.date = "";
+    const scopeCounts = Object.fromEntries(scopes.map((scope) => [scope.value, db.requests.filter((item) => requestUtils.requestScope(item, db.member) === scope.value).length]));
     const rows = db.requests.filter((x) => {
       const haystack = [x.protocol, requestType(x.request_type_id), requestStudent(x), department(x.current_department_id), person(x.assigned_to)].join(" ").toLowerCase();
-      const age = now - new Date(x.created_at).getTime();
-      const period = f.period === "today" ? age < 86400000 : f.period === "30" ? age < 2592000000 : age < 604800000;
-      return period && haystack.includes(f.query.toLowerCase()) && (!f.type || x.request_type_id === f.type) && (!f.department || x.current_department_id === f.department) && (!f.responsible || x.assigned_to === f.responsible) && (!f.status || x.status === f.status);
+      return requestUtils.requestScope(x, db.member) === f.scope
+        && requestUtils.matchesPeriod(x.created_at, f.period)
+        && requestUtils.matchesDate(x.created_at, f.date)
+        && haystack.includes(f.query.toLowerCase())
+        && (!f.type || x.request_type_id === f.type)
+        && (!f.department || x.current_department_id === f.department)
+        && (!f.responsible || x.assigned_to === f.responsible)
+        && (!f.status || x.status === f.status);
     });
-    document.getElementById("requests").innerHTML = `<div class="top"><div><div class="crumb">Operação / Requerimentos</div><h1>Requerimentos</h1></div><div class="actions"><button class="btn" onclick="refreshRequests()">↻ Atualizar</button><button class="btn primary" onclick="openModal()">+ Novo requerimento</button></div></div><div class="toolbar"><input class="search" placeholder="Pesquisar por protocolo, aluno ou requerimento" value="${esc(f.query)}" oninput="setRequestFilter('query',this.value)"><div class="actions"><button class="btn ${f.period === "today" ? "primary" : ""}" onclick="setRequestFilter('period','today')">Hoje</button><button class="btn ${f.period === "7" ? "primary" : ""}" onclick="setRequestFilter('period','7')">7 dias</button><button class="btn ${f.period === "30" ? "primary" : ""}" onclick="setRequestFilter('period','30')">30 dias</button></div></div><article class="panel"><div class="panel-head"><h2>${rows.length} requerimento(s)</h2><button class="link" onclick="requestFilters={period:'7',type:'',department:'',responsible:'',status:'',query:''};renderRequests()">Limpar filtros</button></div><table class="table"><thead><tr><th>Protocolo</th><th>Tipo</th><th>Aluno</th><th>Departamento</th><th>Responsável interno</th><th>Status</th><th>Abertura</th><th></th></tr></thead><tbody>${rows.map((x) => `<tr><td><strong>${esc(x.protocol)}</strong></td><td>${esc(requestType(x.request_type_id))}</td><td>${esc(requestStudent(x))}</td><td>${esc(department(x.current_department_id))}</td><td>${esc(person(x.assigned_to))}</td><td><span class="badge ${badges[x.status] || "open"}">${esc(statuses[x.status] || x.status)}</span></td><td>${esc(when(x.created_at))}</td><td><button class="link" onclick="viewTicket('${x.id}')">Visualizar</button></td></tr>`).join("") || '<tr><td colspan="8" class="backend-empty">Nenhum requerimento encontrado.</td></tr>'}</tbody></table></article>`;
+    document.getElementById("requests").innerHTML = `<div class="top"><div><div class="crumb">Operação / Requerimentos</div><h1>Requerimentos</h1></div><div class="actions"><button class="btn" onclick="refreshRequests()">↻ Atualizar</button><button class="btn primary" onclick="openModal()">+ Novo requerimento</button></div></div><div class="request-tabs" role="tablist" aria-label="Visões dos requerimentos">${scopes.map((scope) => `<button type="button" role="tab" aria-selected="${f.scope === scope.value}" class="request-tab ${f.scope === scope.value ? "active" : ""}" onclick="setRequestFilter('scope','${scope.value}')">${scope.label}<span>${scopeCounts[scope.value]}</span></button>`).join("")}</div><div class="toolbar"><div class="request-searches"><input class="search" placeholder="Pesquisar por protocolo, aluno ou requerimento" value="${esc(f.query)}" oninput="setRequestFilter('query',this.value)"><label class="request-date-filter"><span>Data de abertura</span><input type="date" value="${esc(f.date)}" onchange="setRequestFilter('date',this.value)"></label></div><div class="actions"><button class="btn ${f.period === "all" && !f.date ? "primary" : ""}" onclick="setRequestFilter('period','all')">Todos</button><button class="btn ${f.period === "today" && !f.date ? "primary" : ""}" onclick="setRequestFilter('period','today')">Hoje</button><button class="btn ${f.period === "7" && !f.date ? "primary" : ""}" onclick="setRequestFilter('period','7')">7 dias</button><button class="btn ${f.period === "30" && !f.date ? "primary" : ""}" onclick="setRequestFilter('period','30')">30 dias</button></div></div><article class="panel"><div class="panel-head"><h2>${rows.length} requerimento(s)</h2><button class="link" onclick="requestFilters={scope:requestFilters.scope,period:'all',date:'',type:'',department:'',responsible:'',status:'',query:''};renderRequests()">Limpar filtros</button></div><table class="table"><thead><tr><th>Protocolo</th><th>Tipo</th><th>Aluno</th><th>Departamento</th><th>Responsável interno</th><th>Status</th><th>Abertura</th><th></th></tr></thead><tbody>${rows.map((x) => `<tr><td><strong>${esc(x.protocol)}</strong></td><td>${esc(requestType(x.request_type_id))}</td><td>${esc(requestStudent(x))}</td><td>${esc(department(x.current_department_id))}</td><td>${esc(person(x.assigned_to))}</td><td><span class="badge ${badges[x.status] || "open"}">${esc(statuses[x.status] || x.status)}</span></td><td>${esc(when(x.created_at))}</td><td><button class="link" onclick="viewTicket('${x.id}')">Visualizar</button></td></tr>`).join("") || '<tr><td colspan="8" class="backend-empty">Nenhum requerimento encontrado nesta visão.</td></tr>'}</tbody></table></article>`;
   };
 
   function renderPortal() {
@@ -492,18 +515,50 @@
     finally { busy(false); }
   };
 
+  function eventActor(event) {
+    return event.actor_name_snapshot || person(event.actor_id) || "Usuário não disponível";
+  }
+  function eventDepartment(snapshot, id) {
+    return snapshot || department(id);
+  }
+  function eventActorDepartment(event) {
+    return event.actor_department_name_snapshot || "Setor não registrado";
+  }
+  function eventTitle(event) {
+    const from = eventDepartment(event.from_department_name_snapshot, event.from_department_id);
+    const to = eventDepartment(event.to_department_name_snapshot, event.to_department_id);
+    if (event.event_type === "created") return `Requerimento criado e direcionado para ${to}`;
+    if (event.event_type === "forwarded") return `Encaminhado de ${from} para ${to}`;
+    if (event.to_status === "completed") return `Requerimento concluído no setor ${from}`;
+    if (event.to_status === "awaiting_requester") return `Complemento solicitado no setor ${from}`;
+    if (event.event_type === "note") return "Observação registrada";
+    if (event.event_type === "attachment_added") return "Documento anexado";
+    if (event.event_type === "attachment_removed") return "Documento removido";
+    return "Requerimento atualizado";
+  }
+
   window.viewTicket = async function (id) {
     const item = db.requests.find((x) => x.id === id);
     if (!item) return;
     busy(true);
     try {
       const [events, files] = await Promise.all([
-        db.client.from("request_events").select("id,actor_id,event_type,note,to_status,created_at").eq("request_id", id).order("created_at"),
+        db.client.from("request_events").select("id,actor_id,event_type,note,from_status,to_status,from_department_id,to_department_id,actor_name_snapshot,actor_department_name_snapshot,from_department_name_snapshot,to_department_name_snapshot,created_at").eq("request_id", id).order("created_at"),
         db.client.from("request_attachments").select("id,storage_path,file_name,mime_type,size_bytes,created_at").eq("request_id", id).order("created_at"),
       ]);
       if (events.error || files.error) throw events.error || files.error;
-      const canProcess = isStaff() && !["completed", "rejected", "canceled"].includes(item.status);
-      dialog(`Requerimento ${esc(item.protocol)}`, `<div class="form-grid"><div><span class="sub">Aluno</span><strong>${esc(requestStudent(item))}</strong></div><div><span class="sub">Tipo</span><strong>${esc(requestType(item.request_type_id))}</strong></div><div><span class="sub">Departamento</span><strong>${esc(department(item.current_department_id))}</strong></div><div><span class="sub">Abertura</span><strong>${esc(when(item.created_at))}</strong></div></div><h3 style="margin:22px 0 8px">Descrição</h3><p>${esc(item.description || "Sem descrição.")}</p><h3 style="margin:22px 0 8px">Documentos</h3><div class="file-list">${(files.data || []).map((f) => `<div class="doc"><div><strong>${esc(f.file_name)}</strong><small>${esc(f.mime_type)} · ${(f.size_bytes / 1048576).toFixed(2)} MB</small></div><button class="link" onclick="downloadAttachment('${f.storage_path.replaceAll("'", "")}')">Abrir</button></div>`).join("") || '<span class="sub">Nenhum documento anexado.</span>'}</div><h3 style="margin:22px 0 8px">Histórico</h3><div class="timeline">${(events.data || []).map((e) => `<div class="event"><div class="dot"></div><div><strong>${esc(e.note || statuses[e.to_status] || e.event_type)}</strong><small>${esc(person(e.actor_id))} · ${esc(when(e.created_at))}</small></div></div>`).join("")}</div><div class="field"><label>Observação</label><textarea id="ticketObservation" maxlength="2000"></textarea></div><div class="actions"><button class="btn" onclick="addTicketNote('${id}')">Salvar observação</button>${canProcess ? `<button class="btn" onclick="requestTicketComplement('${id}')">Solicitar complemento</button><button class="btn primary" onclick="processTicket('${id}')">Concluir e encaminhar</button>` : ""}</div>`, "Fechar", closeModal);
+      const eventRows = events.data || [];
+      const hasAdvanced = requestUtils.hasAdvancedRequest(eventRows, db.user.id);
+      const canProcess = canActOnRequest(item) && (isAdmin() || !hasAdvanced);
+      const canContribute = canAddRequestContent(item) && (!isStaff() || isAdmin() || !hasAdvanced);
+      const canRequestComplement = requestUtils.canRequestComplement(item, db.member, hasAdvanced);
+      const trackingMessage = requestUtils.isClosed(item.status)
+        ? "Este requerimento está encerrado e permanece disponível para consulta."
+        : `Este requerimento está sob responsabilidade de ${esc(department(item.current_department_id))}.`;
+      const actions = canContribute || canRequestComplement
+        ? `${canContribute ? '<div class="field"><label>Observação</label><textarea id="ticketObservation" maxlength="2000"></textarea></div>' : ""}<div class="actions">${canContribute ? `<button class="btn" onclick="addTicketNote('${id}')">Salvar observação</button>` : ""}${canRequestComplement ? `<button class="btn" onclick="requestTicketComplement('${id}')">Solicitar complemento</button>` : ""}${canProcess ? `<button class="btn primary" onclick="processTicket('${id}')">Concluir e encaminhar</button>` : ""}</div>`
+        : `<div class="tracking-note"><strong>Somente acompanhamento</strong><span>${trackingMessage}</span></div>`;
+      dialog(`Requerimento ${esc(item.protocol)}`, `<div class="form-grid"><div><span class="sub">Aluno</span><strong>${esc(requestStudent(item))}</strong></div><div><span class="sub">Tipo</span><strong>${esc(requestType(item.request_type_id))}</strong></div><div><span class="sub">Departamento</span><strong>${esc(department(item.current_department_id))}</strong></div><div><span class="sub">Abertura</span><strong>${esc(when(item.created_at))}</strong></div></div><h3 style="margin:22px 0 8px">Descrição</h3><p>${esc(item.description || "Sem descrição.")}</p><h3 style="margin:22px 0 8px">Documentos</h3><div class="file-list">${(files.data || []).map((f) => `<div class="doc"><div><strong>${esc(f.file_name)}</strong><small>${esc(f.mime_type)} · ${(f.size_bytes / 1048576).toFixed(2)} MB</small></div><button class="link" onclick="downloadAttachment('${f.storage_path.replaceAll("'", "")}')">Abrir</button></div>`).join("") || '<span class="sub">Nenhum documento anexado.</span>'}</div><h3 style="margin:22px 0 8px">Histórico</h3><div class="timeline">${eventRows.map((event) => `<div class="event"><div class="dot"></div><div><strong>${esc(eventTitle(event))}</strong>${event.note ? `<span class="event-note">${esc(event.note)}</span>` : ""}<small>${esc(eventActor(event))} · ${esc(eventActorDepartment(event))} · ${esc(when(event.created_at))}</small></div></div>`).join("")}</div>${actions}`, "Fechar", closeModal);
     } catch (e) { notify(errorText(e, "Não foi possível abrir o requerimento.")); }
     finally { busy(false); }
   };
@@ -523,7 +578,14 @@
     const observation = document.getElementById("ticketObservation")?.value.trim() || "";
     const result = await db.client.rpc("advance_request", { target_request_id: id, observation });
     if (result.error) return notify(errorText(result.error, "Não foi possível encaminhar."));
-    closeModal(); await refresh("requests"); notify("Etapa concluída e fluxo atualizado.");
+    const updated = Array.isArray(result.data) ? result.data[0] : result.data;
+    closeModal();
+    await refresh("requests");
+    if (updated?.status === "completed") {
+      notify("Requerimento concluído.");
+    } else {
+      notify(`Requerimento encaminhado para ${department(updated?.current_department_id)}.`);
+    }
   };
   window.requestTicketComplement = function (id) {
     dialog("Solicitar complemento", '<div class="field"><label>Orientação</label><textarea id="complementMessage" maxlength="2000"></textarea></div><div id="complementError" class="text-destructive text-small"></div>', "Enviar", async () => {
