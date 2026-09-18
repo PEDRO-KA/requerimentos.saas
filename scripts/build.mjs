@@ -27,10 +27,15 @@ source = source.replace("</head>", '  <link rel="stylesheet" href="./backend.css
 source = source.replace("</body>", `  <script>window.__SUPABASE_CONFIG__=${publicConfig};</script>\n  <script src="./supabase.js"></script>\n  <script src="./supabase-app.js"></script>\n</body>`);
 source = source.replace('<script src="./supabase-app.js"></script>', '<script src="./student-utils.js"></script>\n  <script src="./supabase-app.js"></script>');
 source = source.replace('<script src="./supabase-app.js"></script>', '<script src="./request-utils.js"></script>\n  <script src="./supabase-app.js"></script>');
+source = source.replace('<script src="./supabase-app.js"></script>', '<script src="./pdf-lib.js"></script>\n  <script src="./receipt-pdf.js"></script>\n  <script src="./supabase-app.js"></script>');
 
 const dist = path.join(root, "dist");
 const supabaseBundle = await readFile(
   path.join(root, "node_modules", "@supabase", "supabase-js", "dist", "umd", "supabase.js"),
+  "utf8",
+);
+const pdfBundle = await readFile(
+  path.join(root, "node_modules", "pdf-lib", "dist", "pdf-lib.min.js"),
   "utf8",
 );
 await mkdir(dist, { recursive: true });
@@ -40,7 +45,10 @@ await Promise.all([
   copyFile(path.join(root, "src", "student-utils.js"), path.join(dist, "student-utils.js")),
   copyFile(path.join(root, "src", "request-utils.js"), path.join(dist, "request-utils.js")),
   copyFile(path.join(root, "src", "supabase-app.js"), path.join(dist, "supabase-app.js")),
+  copyFile(path.join(root, "src", "receipt-pdf.js"), path.join(dist, "receipt-pdf.js")),
   writeFile(path.join(dist, "supabase.js"), `${supabaseBundle.trimEnd()}\n`, "utf8"),
+  writeFile(path.join(dist, "pdf-lib.js"), `${pdfBundle.trimEnd()}\n`, "utf8"),
   copyFile(path.join(root, "ObtemLogos 02.jpg"), path.join(dist, "ObtemLogos 02.jpg")),
+  copyFile(path.join(root, "ipe-logo.png"), path.join(dist, "ipe-logo.png")),
 ]);
 console.log(`Build concluído${url && publishableKey ? " com Supabase configurado" : " em modo pendente"}.`);

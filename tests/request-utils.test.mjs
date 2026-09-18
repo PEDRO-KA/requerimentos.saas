@@ -20,9 +20,9 @@ test("administrador atua globalmente e encerrados ficam em concluídos", () => {
   assert.equal(canActOnRequest({ ...active, status: "completed" }, { role: "admin" }), false);
 });
 
-test("acesso histórico não concede escrita e portal preserva o próprio requerimento", () => {
+test("acesso histórico e contas de aluno não concedem escrita", () => {
   assert.equal(canAddRequestContent(active, { role: "attendant", department_id: "origin" }, "creator"), false);
-  assert.equal(canAddRequestContent(active, { role: "student", department_id: null }, "creator"), true);
+  assert.equal(canAddRequestContent(active, { role: "student", department_id: null }, "creator"), false);
 });
 
 test("cada colaborador encaminha apenas uma vez e depois só solicita complemento", () => {

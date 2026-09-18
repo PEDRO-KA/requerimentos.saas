@@ -15,10 +15,7 @@
   }
 
   function canAddRequestContent(request, member, userId) {
-    if (canActOnRequest(request, member)) return true;
-    return member?.role === "student"
-      && request?.requester_id === userId
-      && !isClosed(request?.status);
+    return canActOnRequest(request, member);
   }
 
   function hasAdvancedRequest(events, userId) {

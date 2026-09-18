@@ -3,6 +3,7 @@ import { requireAdmin } from "../_shared/supabase.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
 const roles = new Set(["admin", "coordinator", "attendant", "student"]);
+const creatableRoles = new Set(["admin", "coordinator", "attendant"]);
 
 function normalizeCpf(value: string) {
   return value.replace(/\D/g, "");
@@ -116,7 +117,7 @@ Deno.serve(async (request) => {
       const email = String(payload.email || "").trim().toLowerCase();
       const cpf = normalizeCpf(String(payload.cpf || ""));
       const password = String(payload.password || "");
-      const role = String(payload.role || "student");
+      const role = String(payload.role || "attendant");
       const departmentId = payload.departmentId
         ? String(payload.departmentId)
         : null;
@@ -126,7 +127,7 @@ Deno.serve(async (request) => {
         !email.includes("@") ||
         !validCpf(cpf) ||
         !validPassword(password) ||
-        !roles.has(role)
+        !creatableRoles.has(role)
       ) {
         return json(request, {
           error:

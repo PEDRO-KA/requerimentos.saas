@@ -49,4 +49,6 @@
 .catalog-grid .panel{min-width:0}
 .student-form-help{margin:-4px 0 14px;color:#64748b;font-size:12px}
 .student-status{display:inline-flex;align-items:center}
+.receipt-actions{white-space:nowrap}
+.receipt-actions .link+.link{margin-left:12px}
 @media(max-width:760px){.profile .logout-link{padding-left:0}.workflow-step-row{grid-template-columns:30px 1fr}.workflow-step-actions{grid-column:2}.catalog-grid{grid-template-columns:1fr}.student-options{position:static}.request-searches{flex-basis:100%;flex-wrap:wrap}.request-searches .search{flex:1 1 260px}.request-date-filter{flex:1 1 220px;justify-content:space-between}}

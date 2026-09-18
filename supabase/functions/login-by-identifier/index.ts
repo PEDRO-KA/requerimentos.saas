@@ -36,7 +36,7 @@ Deno.serve(async (request) => {
     const admin = adminClient();
     let profileQuery = admin
       .from("profiles")
-      .select("email, is_active");
+      .select("id, email, is_active");
 
     if (!identifier.includes("@")) {
       const cpf = cpfDigits(identifier);
@@ -54,6 +54,15 @@ Deno.serve(async (request) => {
     const { data: profile, error: profileError } = await profileQuery
       .maybeSingle();
     if (profileError || !profile?.email || !profile.is_active) {
+      return invalidResponse();
+    }
+    const { data: staffMemberships, error: membershipError } = await admin
+      .from("memberships")
+      .select("role")
+      .eq("user_id", profile.id)
+      .in("role", ["admin", "coordinator", "attendant"])
+      .limit(1);
+    if (membershipError || !staffMemberships?.length) {
       return invalidResponse();
     }
     const email = profile.email;

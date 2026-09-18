@@ -26,7 +26,7 @@ expect(!/sb_secret_|service_role/i.test(output), "O build contém marcador de ch
 expect(output.includes("supabase-app.js") && output.includes("supabase.js"), "Os scripts do Supabase não foram injetados.");
 expect(config.includes("enable_signup = false"), "O cadastro público deve estar desativado.");
 expect(/\[auth\.email\][\s\S]*?enable_signup = true/.test(config), "O provedor de e-mail deve continuar habilitado.");
-const rlsTables = ["organizations", "departments", "profiles", "memberships", "request_types", "workflow_steps", "protocol_counters", "requests", "request_events", "request_attachments", "notifications", "audit_logs", "courses", "course_classes", "students", "student_enrollments", "request_department_history"];
+const rlsTables = ["organizations", "departments", "profiles", "memberships", "request_types", "workflow_steps", "protocol_counters", "requests", "request_events", "request_attachments", "notifications", "audit_logs", "courses", "course_classes", "students", "student_enrollments", "request_department_history", "request_receipts"];
 for (const table of rlsTables) expect(migrations.includes(`alter table public.${table} enable row level security`), `RLS ausente em public.${table}.`);
 expect(migrations.includes("shares_org_with_user"), "A política de perfis deve evitar recursão RLS.");
 expect(migrations.includes("generate_protocol") && migrations.includes("advance_request"), "Funções transacionais ausentes.");
@@ -37,7 +37,9 @@ expect(!migrations.includes("request_email_deliveries"), "A fila de e-mail isola
 expect(app.includes(">Editar etapa</button>") && app.includes('rpc("save_workflow_steps"'), "Editor de etapas não está conectado ao fluxo versionado.");
 for (const token of ["create table public.students", "create table public.courses", "create table public.course_classes", "create table public.student_enrollments", "create_request_for_student", "search_students", "delete_student"]) expect(migrations.includes(token), `Contrato acadêmico ausente: ${token}`);
 expect(migrations.includes("requests_student_pair_check") && migrations.includes("student_enrollments_one_active_unique"), "Integridade aluno-vínculo-requerimento ausente.");
-expect(app.includes("Cadastro rápido de aluno") && app.includes('rpc("create_request_for_student"') && source.includes('data-view="students"'), "Fluxo de alunos não está conectado à interface.");
+expect(app.includes("Cadastro rápido de aluno") && app.includes('rpc("create_request_for_student_with_discipline"') && source.includes('data-view="students"'), "Fluxo de alunos não está conectado à interface.");
+expect(migrations.includes("create table public.request_receipts") && migrations.includes("request_events_capture_receipt"), "Comprovantes de conclusão não estão protegidos no banco.");
+expect(!source.includes('data-view="portal"') && app.includes("Acesso exclusivo a colaboradores."), "O portal do aluno não foi desativado.");
 expect(studentUtils.includes("isValidCpf") && studentUtils.includes("formatMobile"), "Utilitários de CPF e celular ausentes.");
 expect(requestUtils.includes("requestScope") && requestUtils.includes("canActOnRequest"), "Utilitários de isolamento por setor ausentes.");
 expect(output.includes("student-utils.js") && output.includes("request-utils.js"), "Os utilitários do frontend não foram injetados no build.");
