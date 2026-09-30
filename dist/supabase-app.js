@@ -18,6 +18,7 @@
   const esc = (v) => String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   const when = (v) => v ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(v)) : "—";
   const cpf = (v) => String(v || "").replace(/\D/g, "").slice(0, 11).replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4");
+  const validEmail = (value) => value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
   const isAdmin = () => db.member?.role === "admin";
   const isStaff = () => ["admin", "coordinator", "attendant"].includes(db.member?.role);
   const orgId = () => db.member?.organization_id;
@@ -35,6 +36,7 @@
     if (/duplicate|unique/i.test(message)) return "Já existe um cadastro com esses dados.";
     if (/Invalid CPF/i.test(message)) return "Informe um CPF válido.";
     if (/Invalid mobile phone/i.test(message)) return "Informe um celular válido com DDD.";
+    if (/request type has (request history|linked records)/i.test(message)) return "Este tipo possui requerimentos vinculados e não pode ser excluído. Desative-o para impedir novos usos.";
     if (/request history/i.test(message)) return "Este aluno possui requerimentos e não pode ser excluído.";
     if (/row-level security|permission|forbidden|not authorized/i.test(message)) return "Você não tem permissão para realizar esta ação.";
     return message || fallback;
@@ -52,11 +54,13 @@
   };
 
   function showLogin(message = "") {
-    document.getElementById("loginScreen").style.display = "grid";
+    window.closeMobileMenu?.();
+    document.getElementById("loginScreen").style.display = "";
     document.getElementById("appRoot").classList.remove("logged");
     document.getElementById("loginError").textContent = message;
   }
   function showApp() {
+    window.closeMobileMenu?.();
     document.getElementById("loginScreen").style.display = "none";
     document.getElementById("appRoot").classList.add("logged");
   }
@@ -144,12 +148,16 @@
     }
     document.querySelectorAll(".sidebar [data-section]").forEach((x) => { x.style.display = isAdmin() ? "" : "none"; });
     document.querySelectorAll(".sidebar [data-staff-only]").forEach((x) => { x.style.display = isStaff() ? "" : "none"; });
-    const label = [...document.querySelectorAll(".side-label")].find((x) => x.textContent.trim() === "Configurações");
+    const label = document.querySelector(".sidebar [data-admin-label]");
     if (label) label.style.display = isAdmin() ? "" : "none";
     const dashboard = document.querySelector('[data-view="dashboard"]');
     if (dashboard) dashboard.style.display = isStaff() ? "" : "none";
     const requestCount = document.querySelector('[data-view="requests"] .count');
     if (requestCount) requestCount.textContent = db.requests.filter((item) => requestUtils.requestScope(item, db.member) === "queue").length;
+    const headerName = document.querySelector(".workspace-person-name");
+    if (headerName) headerName.textContent = db.profile.full_name;
+    const headerAvatar = document.querySelector(".workspace-person-avatar");
+    if (headerAvatar) headerAvatar.textContent = db.profile.full_name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
   }
 
   async function refresh(view) {
@@ -160,8 +168,20 @@
 
   window.login = async function (event) {
     event.preventDefault();
-    const identifier = document.getElementById("loginCpf").value.trim();
+    const identifier = document.getElementById("loginEmail").value.trim().toLowerCase();
     const password = document.getElementById("loginPassword").value;
+    const loginError = document.getElementById("loginError");
+    loginError.textContent = "";
+    if (!validEmail(identifier)) {
+      loginError.textContent = "Informe um e-mail válido para entrar.";
+      document.getElementById("loginEmail").focus();
+      return;
+    }
+    if (!password) {
+      loginError.textContent = "Informe sua senha.";
+      document.getElementById("loginPassword").focus();
+      return;
+    }
     if (document.getElementById("rememberLogin").checked) localStorage.setItem("ipe-remember-login", "1");
     else localStorage.removeItem("ipe-remember-login");
     busy(true);
@@ -174,16 +194,16 @@
       notify(`Bem-vindo(a), ${db.profile.full_name}.`);
     } catch (e) {
       await db.client.auth.signOut().catch(() => {});
-      showLogin(errorText(e, "Usuário ou senha inválidos."));
+      showLogin(errorText(e, "E-mail ou senha inválidos."));
     } finally { busy(false); }
   };
 
   window.logout = async function () { busy(true); try { await db.client.auth.signOut(); showLogin(); } finally { busy(false); } };
-  window.openRegister = () => notify("O acesso é criado exclusivamente pelo administrador.");
+  window.openRegister = () => notify("O acesso é criado exclusivamente pelo gestor responsável.");
   window.forgotPassword = function () {
-    dialog("Recuperar senha", '<p>Informe seu CPF ou e-mail. A resposta é sempre genérica por segurança.</p><div class="field"><label>CPF ou e-mail</label><input id="recoveryLogin" autocomplete="username"></div><div id="recoveryError" class="text-destructive text-small"></div>', "Enviar instruções", async () => {
-      const identifier = document.getElementById("recoveryLogin").value.trim();
-      if (!identifier) return document.getElementById("recoveryError").textContent = "Informe seu CPF ou e-mail.";
+    dialog("Recuperar senha", '<p>Informe o e-mail cadastrado. Se o acesso estiver ativo, você receberá as instruções.</p><div class="field"><label for="recoveryEmail">E-mail</label><input id="recoveryEmail" type="email" inputmode="email" autocomplete="email" placeholder="seu.email@ipe.edu.br"></div><div id="recoveryError" class="text-destructive text-small" role="alert"></div>', "Enviar instruções", async () => {
+      const identifier = document.getElementById("recoveryEmail").value.trim().toLowerCase();
+      if (!validEmail(identifier)) return document.getElementById("recoveryError").textContent = "Informe um e-mail válido.";
       try { await invoke("login-by-identifier", { action: "recover", identifier }, false); closeModal(); notify("Se o cadastro estiver ativo, as instruções serão enviadas ao e-mail registrado."); }
       catch (e) { document.getElementById("recoveryError").textContent = errorText(e, "Não foi possível enviar as instruções."); }
     });
@@ -203,7 +223,10 @@
   function activate(name) {
     document.querySelectorAll(".view").forEach((x) => x.classList.remove("active"));
     document.getElementById(name)?.classList.add("active");
-    document.querySelectorAll(".nav button").forEach((x) => x.classList.toggle("active", x.dataset.view === name));
+    document.querySelectorAll(".nav button").forEach((x) => x.classList.toggle("active", x.dataset.view === name && (name !== "settings" || x.dataset.section === activeSettings)));
+    const pageLabel = document.getElementById("workspacePageLabel");
+    if (pageLabel) pageLabel.textContent = ({ dashboard: "Visão geral", requests: "Requerimentos", students: "Alunos", settings: "Configurações" })[name] || "Protto";
+    window.closeMobileMenu?.();
     window.scrollTo(0, 0);
   }
   window.showView = function (name) {
@@ -218,7 +241,7 @@
     if (name === "settings") renderSettings();
   };
   window.openSettings = function (section) { if (!isAdmin()) return notify("Área exclusiva do administrador."); activeSettings = section; activate("settings"); renderSettings(); };
-  window.setSettings = function (section) { activeSettings = section; document.querySelectorAll("[data-settings]").forEach((x) => x.classList.toggle("active", x.dataset.settings === section)); renderSettings(); };
+  window.setSettings = function (section) { activeSettings = section; document.querySelectorAll("[data-settings]").forEach((x) => x.classList.toggle("active", x.dataset.settings === section)); document.querySelectorAll('.nav [data-section]').forEach((x) => x.classList.toggle("active", x.dataset.section === section)); renderSettings(); };
 
   function renderDashboard() {
     const active = db.requests.filter((x) => !["completed", "rejected", "canceled"].includes(x.status));
@@ -672,7 +695,7 @@
 
   function userForm(u) {
     const p = u ? "edit" : "";
-    return `<div class="form-grid"><div class="field"><label>Nome completo</label><input id="${p}UserName" value="${esc(u?.full_name || "")}"></div><div class="field"><label>Perfil</label><select id="${p}UserRole">${roleOptions(u?.role || "attendant")}</select></div></div><div class="field"><label>Departamento</label><select id="${p}UserDept">${departmentOptions(u?.department_id)}</select></div><div class="field"><label>CPF (login)</label><input id="${p}UserCpf" value="${esc(cpf(u?.cpf_digits || ""))}"></div><div class="form-grid"><div class="field"><label>E-mail</label><input id="${p}UserEmail" type="email" value="${esc(u?.email || "")}"></div><div class="field"><label>Confirmar e-mail</label><input id="${p}UserEmailConfirm" type="email" value="${esc(u?.email || "")}"></div></div><div class="field"><label>${u ? "Nova senha (opcional)" : "Senha inicial"}</label><input id="${p}UserPassword" type="password" autocomplete="new-password" placeholder="10 caracteres, maiúscula, minúscula e número"></div><div id="${u ? "userFormError" : "newUserError"}" class="text-destructive text-small"></div>`;
+    return `<div class="form-grid"><div class="field"><label>Nome completo</label><input id="${p}UserName" value="${esc(u?.full_name || "")}"></div><div class="field"><label>Perfil</label><select id="${p}UserRole">${roleOptions(u?.role || "attendant")}</select></div></div><div class="field"><label>Departamento</label><select id="${p}UserDept">${departmentOptions(u?.department_id)}</select></div><div class="field"><label>CPF (dado cadastral)</label><input id="${p}UserCpf" value="${esc(cpf(u?.cpf_digits || ""))}"></div><div class="form-grid"><div class="field"><label>E-mail</label><input id="${p}UserEmail" type="email" value="${esc(u?.email || "")}"></div><div class="field"><label>Confirmar e-mail</label><input id="${p}UserEmailConfirm" type="email" value="${esc(u?.email || "")}"></div></div><div class="field"><label>${u ? "Nova senha (opcional)" : "Senha inicial"}</label><input id="${p}UserPassword" type="password" autocomplete="new-password" placeholder="10 caracteres, maiúscula, minúscula e número"></div><div id="${u ? "userFormError" : "newUserError"}" class="text-destructive text-small"></div>`;
   }
   function readUser(prefix) {
     const fullName = document.getElementById(`${prefix}UserName`)?.value.trim();
@@ -770,7 +793,7 @@
 
   window.renderRequirements = function () {
     settingsHeader("Tipos de Requerimentos", "+ Novo tipo");
-    document.getElementById("settingsContent").innerHTML = `<article class="panel"><div class="panel-head"><h2>Tipos e fluxos</h2></div><table class="table"><thead><tr><th>Requerimento</th><th>Prazo</th><th>Fluxo</th><th>Status</th><th></th></tr></thead><tbody>${db.types.map((t) => { const flow = db.steps.filter((s) => s.request_type_id === t.id && s.workflow_version === t.current_workflow_version).sort((a, b) => a.position - b.position); return `<tr class="${t.is_active ? "" : "user-inactive"}"><td><strong>${esc(t.name)}</strong><span class="sub">${esc(t.description)}</span></td><td>${t.default_deadline_business_days} dias úteis</td><td>${esc(flow.map((s) => s.label).join(" → ") || "Não configurado")}</td><td>${t.is_active ? "Ativo" : "Inativo"}</td><td><button class="link" onclick="flowEditor('${t.id}')">Editar etapa</button> &nbsp; <button class="link" onclick="editRequirementType('${t.id}')">Editar</button></td></tr>`; }).join("")}</tbody></table></article>`;
+    document.getElementById("settingsContent").innerHTML = `<article class="panel"><div class="panel-head"><h2>Tipos e fluxos</h2></div><table class="table"><thead><tr><th>Requerimento</th><th>Prazo</th><th>Fluxo</th><th>Status</th><th></th></tr></thead><tbody>${db.types.map((t) => { const flow = db.steps.filter((s) => s.request_type_id === t.id && s.workflow_version === t.current_workflow_version).sort((a, b) => a.position - b.position); return `<tr class="${t.is_active ? "" : "user-inactive"}"><td><strong>${esc(t.name)}</strong><span class="sub">${esc(t.description)}</span></td><td>${t.default_deadline_business_days} dias úteis</td><td>${esc(flow.map((s) => s.label).join(" → ") || "Não configurado")}</td><td>${t.is_active ? "Ativo" : "Inativo"}</td><td><button class="link" onclick="flowEditor('${t.id}')">Editar etapa</button> &nbsp; <button class="link" onclick="editRequirementType('${t.id}')">Editar</button> &nbsp; <button class="link workflow-remove" onclick="confirmDeleteRequirementType('${t.id}')">Excluir</button></td></tr>`; }).join("")}</tbody></table></article>`;
   };
   window.saveNewType = async function () {
     const name = document.getElementById("requirementName").value.trim();
@@ -797,6 +820,22 @@
       if (result.error) return document.getElementById("requirementError").textContent = errorText(result.error, "Não foi possível atualizar.");
       closeModal(); activeSettings = "types"; await refresh("settings"); notify("Tipo atualizado.");
     });
+  };
+  window.confirmDeleteRequirementType = function (id) {
+    if (!isAdmin()) return notify("Somente administradores podem excluir tipos de requerimentos.");
+    const item = db.types.find((value) => value.id === id);
+    if (!item) return;
+    dialog("Excluir tipo de requerimento", `<p>Deseja excluir <strong>${esc(item.name)}</strong> e as etapas do seu fluxo?</p><p class="sub">Esta ação não pode ser desfeita. Se já existirem requerimentos vinculados, a exclusão será bloqueada para preservar o histórico.</p><div id="requirementDeleteError" class="text-destructive text-small" role="alert"></div>`, "Excluir tipo", async () => {
+      const node = document.getElementById("requirementDeleteError");
+      busy(true);
+      try {
+        const result = await db.client.rpc("delete_request_type", { target_organization_id: orgId(), target_request_type_id: id });
+        if (result.error) return node.textContent = errorText(result.error, "Não foi possível excluir o tipo de requerimento.");
+        closeModal(); activeSettings = "types"; await refresh("settings"); notify("Tipo de requerimento excluído.");
+      } catch (error) {
+        node.textContent = errorText(error, "Não foi possível excluir o tipo de requerimento.");
+      } finally { busy(false); }
+    }, true);
   };
   let workflowDraft = null;
   function workflowDepartmentOptions(selected) {

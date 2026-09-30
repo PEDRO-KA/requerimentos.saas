@@ -1,4 +1,4 @@
-import { readFile, writeFile, copyFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, copyFile, mkdir, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
@@ -39,6 +39,7 @@ const pdfBundle = await readFile(
   "utf8",
 );
 await mkdir(dist, { recursive: true });
+await mkdir(path.join(dist, "fonts"), { recursive: true });
 await Promise.all([
   writeFile(path.join(dist, "index.html"), source, "utf8"),
   copyFile(path.join(root, "src", "backend.css"), path.join(dist, "backend.css")),
@@ -48,7 +49,16 @@ await Promise.all([
   copyFile(path.join(root, "src", "receipt-pdf.js"), path.join(dist, "receipt-pdf.js")),
   writeFile(path.join(dist, "supabase.js"), `${supabaseBundle.trimEnd()}\n`, "utf8"),
   writeFile(path.join(dist, "pdf-lib.js"), `${pdfBundle.trimEnd()}\n`, "utf8"),
-  copyFile(path.join(root, "ObtemLogos 02.jpg"), path.join(dist, "ObtemLogos 02.jpg")),
   copyFile(path.join(root, "ipe-logo.png"), path.join(dist, "ipe-logo.png")),
+  copyFile(path.join(root, "protto-logo.png"), path.join(dist, "protto-logo.png")),
+  copyFile(path.join(root, "protto-login-logo.png"), path.join(dist, "protto-login-logo.png")),
+  copyFile(path.join(root, "protto-login-illustration.png"), path.join(dist, "protto-login-illustration.png")),
+  copyFile(path.join(root, "fonts", "nunito-latin-wght-normal.woff2"), path.join(dist, "fonts", "nunito-latin-wght-normal.woff2")),
+  copyFile(path.join(root, "fonts", "OFL.txt"), path.join(dist, "fonts", "OFL.txt")),
+]);
+await Promise.all([
+  rm(path.join(dist, "protto-wordmark.svg"), { force: true }),
+  rm(path.join(dist, "ipe-emblem.png"), { force: true }),
+  rm(path.join(dist, "ObtemLogos 02.jpg"), { force: true }),
 ]);
 console.log(`Build concluído${url && publishableKey ? " com Supabase configurado" : " em modo pendente"}.`);
