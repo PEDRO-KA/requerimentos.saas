@@ -24,6 +24,13 @@
       && (event.event_type === "forwarded" || event.to_status === "completed"));
   }
 
+  function hasAdvancedCurrentStep(events, userId, stepId) {
+    return Boolean(userId && stepId) && (events || []).some((event) =>
+      event.actor_id === userId
+      && event.from_step_id === stepId
+      && (event.event_type === "forwarded" || event.to_status === "completed"));
+  }
+
   function canRequestComplement(request, member, hasAdvanced) {
     if (!request || !member || isClosed(request.status)) return false;
     return canActOnRequest(request, member)
@@ -69,6 +76,7 @@
     canActOnRequest,
     canAddRequestContent,
     hasAdvancedRequest,
+    hasAdvancedCurrentStep,
     canRequestComplement,
     requestScope,
     matchesPeriod,

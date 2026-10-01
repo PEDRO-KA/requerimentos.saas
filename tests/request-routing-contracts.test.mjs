@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const [migration, singleAdvanceMigration, app, config, isolatedReadme, isolatedMigration, isolatedFunction] = await Promise.all([
+const [migration, singleAdvanceMigration, repeatStepMigration, app, config, isolatedReadme, isolatedMigration, isolatedFunction] = await Promise.all([
   readFile(new URL("../supabase/migrations/202609150001_department_request_routing.sql", import.meta.url), "utf8"),
   readFile(new URL("../supabase/migrations/202609160001_single_user_advance_and_actor_sector.sql", import.meta.url), "utf8"),
+  readFile(new URL("../supabase/migrations/20260930193259_allow_repeat_department_step.sql", import.meta.url), "utf8"),
   readFile(new URL("../src/supabase-app.js", import.meta.url), "utf8"),
   readFile(new URL("../supabase/config.toml", import.meta.url), "utf8"),
   readFile(new URL("../supabase/isolated/request-completion-email/README.md", import.meta.url), "utf8"),
@@ -65,8 +66,21 @@ test("bloqueia novo encaminhamento no banco e preserva somente o complemento", (
   assert.match(singleAdvanceMigration, /public\.can_access_request\(r\.id\)/);
   assert.match(complement, /public\.can_request_complement\(current_request\.id\)/);
   assert.match(app, /hasAdvancedRequest\(eventRows, db\.user\.id\)/);
-  assert.match(app, /canProcess = canActOnRequest\(item\) && \(isAdmin\(\) \|\| !hasAdvanced\)/);
   assert.match(app, /canRequestComplement \? .*Solicitar complemento/);
+});
+
+test("o banco e a interface limitam encaminhamento à etapa atual", () => {
+  const action = repeatStepMigration.match(/create or replace function public\.can_act_on_request[\s\S]*?\n\$\$;/)?.[0] || "";
+  assert.match(action, /e\.from_step_id = r\.current_step_id/);
+  assert.match(action, /e\.actor_id = auth\.uid\(\)/);
+  assert.match(action, /e\.organization_id = r\.organization_id/);
+  assert.match(action, /r\.current_department_id = public\.current_department/);
+  assert.match(action, /array\['admin'\]/);
+  assert.doesNotMatch(action, /public\.has_advanced_request/);
+  assert.match(app, /from_status,to_status,from_step_id,from_department_id/);
+  assert.match(app, /hasAdvancedCurrentStep\(eventRows, db\.user\.id, item\.current_step_id\)/);
+  assert.match(app, /canProcess = canActOnRequest\(item\) && \(isAdmin\(\) \|\| !hasAdvancedCurrentStep\)/);
+  assert.match(app, /canRequestComplement\(item, db\.member, hasAdvanced\)/);
 });
 
 test("oferece as três visões sem ocultar itens antigos por padrão", () => {

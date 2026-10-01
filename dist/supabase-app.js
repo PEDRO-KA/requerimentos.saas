@@ -574,14 +574,15 @@
     busy(true);
     try {
       const [events, files] = await Promise.all([
-        db.client.from("request_events").select("id,actor_id,event_type,note,from_status,to_status,from_department_id,to_department_id,actor_name_snapshot,actor_department_name_snapshot,from_department_name_snapshot,to_department_name_snapshot,created_at").eq("request_id", id).order("created_at"),
+        db.client.from("request_events").select("id,actor_id,event_type,note,from_status,to_status,from_step_id,from_department_id,to_department_id,actor_name_snapshot,actor_department_name_snapshot,from_department_name_snapshot,to_department_name_snapshot,created_at").eq("request_id", id).order("created_at"),
         db.client.from("request_attachments").select("id,storage_path,file_name,mime_type,size_bytes,created_at").eq("request_id", id).order("created_at"),
       ]);
       if (events.error || files.error) throw events.error || files.error;
       const eventRows = events.data || [];
       const hasAdvanced = requestUtils.hasAdvancedRequest(eventRows, db.user.id);
-      const canProcess = canActOnRequest(item) && (isAdmin() || !hasAdvanced);
-      const canContribute = canAddRequestContent(item) && (!isStaff() || isAdmin() || !hasAdvanced);
+      const hasAdvancedCurrentStep = requestUtils.hasAdvancedCurrentStep(eventRows, db.user.id, item.current_step_id);
+      const canProcess = canActOnRequest(item) && (isAdmin() || !hasAdvancedCurrentStep);
+      const canContribute = canAddRequestContent(item) && (!isStaff() || isAdmin() || !hasAdvancedCurrentStep);
       const canRequestComplement = requestUtils.canRequestComplement(item, db.member, hasAdvanced);
       const trackingMessage = requestUtils.isClosed(item.status)
         ? "Este requerimento está encerrado e permanece disponível para consulta."

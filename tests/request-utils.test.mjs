@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 await import("../src/request-utils.js");
 
-const { canActOnRequest, canAddRequestContent, hasAdvancedRequest, canRequestComplement, requestScope, matchesPeriod, matchesDate } = globalThis.RequestUtils;
+const { canActOnRequest, canAddRequestContent, hasAdvancedRequest, hasAdvancedCurrentStep, canRequestComplement, requestScope, matchesPeriod, matchesDate } = globalThis.RequestUtils;
 const active = { status: "forwarded", current_department_id: "destination", requester_id: "creator" };
 
 test("setor atual atua e setores anteriores somente acompanham", () => {
@@ -25,7 +25,7 @@ test("acesso histórico e contas de aluno não concedem escrita", () => {
   assert.equal(canAddRequestContent(active, { role: "student", department_id: null }, "creator"), false);
 });
 
-test("cada colaborador encaminha apenas uma vez e depois só solicita complemento", () => {
+test("o histórico anterior continua autorizando pedidos de complemento", () => {
   const events = [
     { actor_id: "other", event_type: "forwarded", to_status: "forwarded" },
     { actor_id: "staff", event_type: "forwarded", to_status: "forwarded" },
@@ -39,6 +39,22 @@ test("cada colaborador encaminha apenas uma vez e depois só solicita complement
   assert.equal(canRequestComplement(active, { role: "attendant", department_id: "origin" }, false), false);
   assert.equal(canRequestComplement(active, { role: "admin" }, true), true);
   assert.equal(canRequestComplement({ ...active, status: "completed" }, { role: "attendant", department_id: "origin" }, true), false);
+});
+
+test("o retorno ao mesmo setor libera uma nova etapa, mas não repete a mesma etapa", () => {
+  const events = [
+    { actor_id: "staff", event_type: "forwarded", from_step_id: "secretaria-1", to_status: "forwarded" },
+    { actor_id: "other", event_type: "forwarded", from_step_id: "coordenacao-2", to_status: "forwarded" },
+  ];
+  assert.equal(hasAdvancedCurrentStep(events, "staff", "secretaria-3"), false);
+  assert.equal(hasAdvancedCurrentStep(events, "staff", "secretaria-1"), true);
+  assert.equal(hasAdvancedCurrentStep(events, "other", "secretaria-3"), false);
+  assert.equal(hasAdvancedCurrentStep(events, "staff", null), false);
+  assert.equal(hasAdvancedCurrentStep([
+    { actor_id: "staff", event_type: "status_changed", from_step_id: "secretaria-3", to_status: "completed" },
+  ], "staff", "secretaria-3"), true);
+  assert.equal(hasAdvancedRequest(events, "staff"), true);
+  assert.equal(canRequestComplement(active, { role: "attendant", department_id: "origin" }, true), true);
 });
 
 test("período todos não oculta processos ativos antigos", () => {
