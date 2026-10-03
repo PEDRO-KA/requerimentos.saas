@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-The browser application lives in `gestao-academica.html`; keep its markup, styles, and client behavior together unless an architectural change is explicitly approved. `ObtemLogos 02.jpg` is a source asset. `dist/` is generated output and must not be edited manually. Node utilities live in `scripts/`: `build.mjs`, `check.mjs`, and `bootstrap-admin.mjs`.
+The browser application's markup and some legacy/demo behavior live in `gestao-academica.html`. Connected behavior and styles also live in `src/`; identify the active handler in the production build before editing. Visual assets and local fonts are in the project root and `fonts/`. `dist/` is generated output and must not be edited manually. Node utilities live in `scripts/`: `build.mjs`, `check.mjs`, and `bootstrap-admin.mjs`.
 
 Supabase configuration lives in `supabase/`. Add ordered database changes to `supabase/migrations/` as `YYYYMMDDHHMM_description.sql`, shared Edge Function code to `supabase/functions/_shared/`, and function entry points to `supabase/functions/<kebab-case-name>/index.ts`. `.openai/hosting.json` stores Sites deployment metadata.
 
@@ -11,10 +11,11 @@ Supabase configuration lives in `supabase/`. Add ordered database changes to `su
 - `pnpm install`: install pinned dependencies with Node.js 20 or newer.
 - `pnpm build`: generate the production site in `dist/`.
 - `pnpm check`: validate the build, closed authentication, RLS policies, and Supabase functions.
+- `pnpm test`: run the Node.js test suite in `tests/`.
 - `pnpm supabase <command>`: run the repository-local Supabase CLI.
 - `npx serve dist`: preview a completed production build locally.
 
-There is no separate unit-test framework or coverage threshold. Future tests belong in `tests/` with descriptive names such as `login-by-identifier.test.ts`.
+Tests use the built-in Node.js test runner; there is no separate unit-test framework or coverage threshold. Add new tests to `tests/` with descriptive names matching the existing convention.
 
 ## Coding Style & Naming Conventions
 
@@ -39,6 +40,10 @@ For features, fixes, database, security, and executable configuration changes:
 7. After every gate passes, report changes, risks, evidence, and a proposed PR title and description.
 
 Documentation-only changes receive proportional review and do not require the complete subagent cycle.
+
+## Documentation Maintenance
+
+Read `README.md` before changing the project. Update it with every new feature and whenever a change makes its description of behavior, permissions, data, integration, setup, validation, deployment, or known limitations inaccurate. Describe implemented behavior and distinguish repository state from remotely verified production state. If no text change is necessary, explain why the README remains accurate during review. Never add real credentials, tokens, or personal data to documentation.
 
 ## Security, Commits, and Pull Requests
 
