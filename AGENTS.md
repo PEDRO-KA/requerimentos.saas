@@ -40,6 +40,10 @@ For features, fixes, database, security, and executable configuration changes:
 
 Documentation-only changes receive proportional review and do not require the complete subagent cycle.
 
+## Documentation Maintenance
+
+Read `README.md` before changing the project. Update it with every new feature and whenever a change makes its description of behavior, permissions, data, integration, setup, validation, deployment, or known limitations inaccurate. Describe implemented behavior and distinguish repository state from remotely verified production state. If no text change is necessary, explain why the README remains accurate during review. Never add real credentials, tokens, or personal data to documentation.
+
 ## Security, Commits, and Pull Requests
 
 Every executable change requires a reviewed diff for hardcoded secrets, tokens, credentials, personal data, tracked `.env` files, Supabase keys, and authorization flaws. When relevant, verify authentication, permissions, RLS, tenant isolation, storage access, and Edge Function boundaries. If the security review cannot be evidenced, block completion.
