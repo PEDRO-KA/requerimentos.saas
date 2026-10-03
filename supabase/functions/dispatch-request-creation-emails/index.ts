@@ -1,10 +1,16 @@
 import { adminClient } from "../_shared/supabase.ts";
 import {
+  decodeRequestCreationSnapshot,
+  encodeRequestCreationSnapshot,
+  isLegacyRequestCreationRetry,
+  legacyRequestCreationMessage,
+  requestCreationDetails,
   requestCreationMessage,
   requestCreationSender,
   retryableResendError,
   validRecipient,
 } from "../_shared/request-creation-email.mjs";
+import { requestCreationInlineImages } from "./assets.mjs";
 
 type Delivery = {
   delivery_id: string;
@@ -12,6 +18,7 @@ type Delivery = {
   recipient_email: string;
   request_protocol: string;
   opened_at: string;
+  delivery_attempt_count: number;
 };
 
 function secureEqual(left: string, right: string) {
@@ -60,7 +67,77 @@ Deno.serve(async (request) => {
       continue;
     }
 
-    const message = requestCreationMessage(delivery);
+    const queued = await admin.from("request_creation_email_jobs")
+      .select("provider_message_id,organization_id,student_id")
+      .eq("id", delivery.delivery_id).maybeSingle();
+    if (queued.error || !queued.data) {
+      await admin.rpc("mark_request_creation_email_failed", {
+        p_delivery_id: delivery.delivery_id,
+        p_error_code: "email_template_snapshot_unavailable",
+        p_retryable: true,
+      });
+      failed += 1;
+      continue;
+    }
+    const legacyRetry = isLegacyRequestCreationRetry(
+      delivery, queued.data.provider_message_id
+    );
+    let details = {};
+    if (!legacyRetry) {
+      if (queued.data.provider_message_id) {
+        const snapshot = decodeRequestCreationSnapshot(queued.data.provider_message_id);
+        if (!snapshot) {
+          await admin.rpc("mark_request_creation_email_failed", {
+            p_delivery_id: delivery.delivery_id,
+            p_error_code: "email_template_snapshot_invalid",
+            p_retryable: false,
+          });
+          failed += 1;
+          continue;
+        }
+        details = snapshot;
+        const student = await admin.from("students").select("email")
+          .eq("id", queued.data.student_id)
+          .eq("organization_id", queued.data.organization_id).maybeSingle();
+        if (student.error || !student.data) {
+          await admin.rpc("mark_request_creation_email_failed", {
+            p_delivery_id: delivery.delivery_id,
+            p_error_code: "email_recipient_check_unavailable",
+            p_retryable: true,
+          });
+          failed += 1;
+          continue;
+        }
+        if (String(student.data.email || "").trim().toLowerCase() !==
+          delivery.recipient_email.trim().toLowerCase()) {
+          await admin.rpc("mark_request_creation_email_failed", {
+            p_delivery_id: delivery.delivery_id,
+            p_error_code: "email_recipient_changed",
+            p_retryable: false,
+          });
+          failed += 1;
+          continue;
+        }
+      } else {
+        details = await requestCreationDetails(admin, delivery);
+        const saved = await admin.from("request_creation_email_jobs")
+          .update({ provider_message_id: encodeRequestCreationSnapshot(details) })
+          .eq("id", delivery.delivery_id).eq("status", "processing")
+          .is("provider_message_id", null).select("id").maybeSingle();
+        if (saved.error || !saved.data) {
+          await admin.rpc("mark_request_creation_email_failed", {
+            p_delivery_id: delivery.delivery_id,
+            p_error_code: "email_template_snapshot_unavailable",
+            p_retryable: true,
+          });
+          failed += 1;
+          continue;
+        }
+      }
+    }
+    const message = legacyRetry
+      ? legacyRequestCreationMessage(delivery)
+      : requestCreationMessage(delivery, details);
     let providerId = "";
     let errorCode = "resend_network_error";
     let retryable = true;
@@ -78,6 +155,7 @@ Deno.serve(async (request) => {
           subject: message.subject,
           html: message.html,
           text: message.text,
+          ...(legacyRetry ? {} : { attachments: requestCreationInlineImages }),
         }),
         signal: AbortSignal.timeout(10000),
       });

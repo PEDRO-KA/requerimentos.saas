@@ -59,7 +59,7 @@ Deno.serve(async (request) => {
         "https://ipe-gestao-academica.spedrohenrique303.chatgpt.site"
       ).replace(/\/$/, "");
       await client.auth.resetPasswordForEmail(email, {
-        redirectTo: appUrl,
+        redirectTo: request.headers.get("origin") || appUrl,
       });
       return json(request, recoveryMessage);
     }
