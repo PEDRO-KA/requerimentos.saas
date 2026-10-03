@@ -1,5 +1,6 @@
 const defaultOrigins = [
   "https://ipe-gestao-academica.spedrohenrique303.chatgpt.site",
+  "https://protto-ipe.vercel.app",
   "http://127.0.0.1:4173",
   "http://localhost:4173",
 ];
